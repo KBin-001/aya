@@ -1,5 +1,5 @@
 import { Client } from '@devicefarmer/adbkit'
-import { shell } from './base'
+import { shell, spawnAdb } from './base'
 import singleton from 'licia/singleton'
 import map from 'licia/map'
 import trim from 'licia/trim'
@@ -57,7 +57,33 @@ const startPackage: IpcStartPackage = async function (deviceId, pkg) {
 
 const installPackage: IpcInstallPackage = async function (deviceId, apkPath) {
   const device = await client.getDevice(deviceId)
-  await device.install(apkPath)
+  try {
+    await device.install(apkPath)
+  } catch (err) {
+    if (!isLowTargetSdkInstallError(err)) {
+      throw err
+    }
+    const { stdout, stderr, code } = await spawnAdb([
+      '-s',
+      deviceId,
+      'install',
+      '--bypass-low-target-sdk-block',
+      apkPath,
+    ])
+    if (code !== 0) {
+      throw new Error(stderr || stdout || 'Failed to install package')
+    }
+  }
+}
+
+function isLowTargetSdkInstallError(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err)
+  return (
+    contain(message, 'INSTALL_FAILED_DEPRECATED_SDK_VERSION') ||
+    contain(message, 'bypass-low-target-sdk-block') ||
+    contain(message, 'low target') ||
+    contain(message, 'minimum target')
+  )
 }
 
 const uninstallPackage: IpcUninstallPackage = async function (deviceId, pkg) {

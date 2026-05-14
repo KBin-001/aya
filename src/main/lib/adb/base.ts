@@ -201,7 +201,6 @@ export function spawnAdb(args: string[]): Promise<{
   return new Promise((resolve, reject) => {
     const cp = childProcess.spawn(bin, args, {
       env: { ...process.env },
-      shell: true,
     })
 
     let stdout = ''
