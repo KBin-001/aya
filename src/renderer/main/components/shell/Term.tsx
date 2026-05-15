@@ -118,8 +118,22 @@ export default observer(function Term(props: ITermProps) {
     props.onSessionIdChange(id)
   }
 
+  async function pasteClipboard() {
+    const text = await navigator.clipboard.readText()
+    if (text) {
+      main.writeShell(sessionIdRef.current, text)
+      termRef.current?.focus()
+    }
+  }
+
   const onContextMenu = (e: React.MouseEvent) => {
     if (!device) {
+      return
+    }
+
+    if (!e.shiftKey) {
+      e.preventDefault()
+      pasteClipboard()
       return
     }
 
@@ -136,12 +150,7 @@ export default observer(function Term(props: ITermProps) {
       },
       {
         label: t('paste'),
-        click: async () => {
-          const text = await navigator.clipboard.readText()
-          if (text) {
-            main.writeShell(sessionIdRef.current, text)
-          }
-        },
+        click: pasteClipboard,
       },
       {
         label: t('selectAll'),
