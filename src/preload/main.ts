@@ -1,7 +1,9 @@
 import {
   IpcClearPackage,
+  IpcCheckUnlockRemountEnv,
   IpcCloseLogcat,
   IpcConnectDevice,
+  IpcConnectWifi,
   IpcCreateDir,
   IpcCreateShell,
   IpcDeleteDir,
@@ -10,6 +12,7 @@ import {
   IpcDisconnectDevice,
   IpcDumpWindowHierarchy,
   IpcEnablePackage,
+  IpcExportMtkLog,
   IpcForward,
   IpcGetAvds,
   IpcGetDevices,
@@ -37,6 +40,8 @@ import {
   IpcResumeLogcat,
   IpcReverse,
   IpcReverseTcp,
+  IpcRunAdbScript,
+  IpcRunUnlockRemountStep,
   IpcScreencap,
   IpcSetScreencastAlwaysOnTop,
   IpcStartAvd,
@@ -124,5 +129,14 @@ export default Object.assign(mainObj, {
   wipeAvdData: invoke<IpcWipeAvdData>('wipeAvdData'),
   restartAdbServer: invoke('restartAdbServer'),
   pairDevice: invoke<IpcPairDevice>('pairDevice'),
+  runAdbScript: invoke<IpcRunAdbScript>('runAdbScript'),
+  connectWifi: invoke<IpcConnectWifi>('connectWifi'),
+  exportMtkLog: invoke<IpcExportMtkLog>('exportMtkLog'),
+  checkUnlockRemountEnv: invoke<IpcCheckUnlockRemountEnv>(
+    'checkUnlockRemountEnv'
+  ),
+  runUnlockRemountStep: invoke<IpcRunUnlockRemountStep>(
+    'runUnlockRemountStep'
+  ),
   getFileUrl: invoke<IpcGetFileUrl>('getFileUrl'),
 })

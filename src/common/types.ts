@@ -99,6 +99,57 @@ export type IpcPairDevice = (
   port: number,
   password: string
 ) => Promise<void>
+export type IpcRunAdbScript = (
+  deviceId: string,
+  commands: string[][]
+) => Promise<void>
+export type IpcConnectWifi = (
+  deviceId: string,
+  ssid: string,
+  password: string
+) => Promise<{
+  wasEnabled: boolean
+  enabled: boolean
+}>
+export type IpcExportMtkLog = (
+  deviceId: string,
+  sourcePath: string
+) => Promise<string>
+export interface IUnlockRemountEnv {
+  adbPath: string
+  fastbootPath: string
+  adbReady: boolean
+  fastbootReady: boolean
+  adbState: string
+  oemUnlockAllowed: string
+  fastbootDevices: string[]
+}
+export type IUnlockRemountStep =
+  | 'checkAdb'
+  | 'enableOemUnlock'
+  | 'rebootBootloader'
+  | 'checkFastboot'
+  | 'flashingUnlock'
+  | 'oemUnlock'
+  | 'fastbootReboot'
+  | 'waitForAndroid'
+  | 'remount'
+  | 'disableVerityRemount'
+  | 'finalReboot'
+export interface IUnlockRemountResult {
+  success: boolean
+  stdout: string
+  stderr: string
+  code: number | null
+  message: string
+}
+export type IpcCheckUnlockRemountEnv = (
+  deviceId: string
+) => Promise<IUnlockRemountEnv>
+export type IpcRunUnlockRemountStep = (
+  deviceId: string,
+  step: IUnlockRemountStep
+) => Promise<IUnlockRemountResult>
 export type IpcCreateShell = (deviceId: string) => Promise<string>
 export type IpcWriteShell = (sessionId: string, data: string) => void
 export type IpcResizeShell = (
@@ -108,7 +159,11 @@ export type IpcResizeShell = (
 ) => void
 export type IpcKillShell = (sessionId: string) => void
 export type IpcScreencap = (deviceId: string) => Promise<string>
-export type IpcOpenLogcat = (deviceId: string) => Promise<string>
+export type IpcLogSource = 'logcat' | 'kernel'
+export type IpcOpenLogcat = (
+  deviceId: string,
+  source?: IpcLogSource
+) => Promise<string>
 export type IpcCloseLogcat = (logcatId: string) => Promise<void>
 export type IpcPauseLogcat = IpcCloseLogcat
 export type IpcResumeLogcat = IpcCloseLogcat
