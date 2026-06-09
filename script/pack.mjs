@@ -29,6 +29,7 @@ const config = {
     installerSidebar: 'build/installerSidebar.bmp',
   },
   win: {
+    signAndEditExecutable: false,
     target: [
       {
         target: 'nsis',

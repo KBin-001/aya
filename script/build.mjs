@@ -1,25 +1,52 @@
-const pkg = await fs.readJson('package.json')
+import { spawnSync } from 'child_process'
+import path from 'path'
+import fs from 'fs-extra'
+
+const rootDir = process.cwd()
+const distDir = path.resolve(rootDir, 'dist')
+
+const pkg = await fs.readJson(path.resolve(rootDir, 'package.json'))
 const electron = pkg.devDependencies.electron
-delete pkg.devDependencies
-pkg.devDependencies = {
-  electron,
+const distPkg = {
+  ...pkg,
+  main: 'main/index.js',
+  devDependencies: {
+    electron,
+  },
+  scripts: {
+    start: 'electron main/index.js',
+  },
 }
-delete pkg.scripts
-pkg.scripts = {
-  start: 'electron main/index.js',
-}
-pkg.main = 'main/index.js'
 
-await $`npm run build:main`
-await $`npm run build:preload`
-await $`npm run build:renderer`
+runNpm(['run', 'build:main'], rootDir)
+runNpm(['run', 'build:preload'], rootDir)
+runNpm(['run', 'build:renderer'], rootDir)
 
-await fs.copy('build', 'dist/build')
-await fs.copy('resources', 'dist/resources')
-cd('dist')
+await fs.copy(path.resolve(rootDir, 'build'), path.resolve(distDir, 'build'))
+await fs.copy(
+  path.resolve(rootDir, 'resources'),
+  path.resolve(distDir, 'resources')
+)
 
-await fs.writeJson('package.json', pkg, {
+await fs.writeJson(path.resolve(distDir, 'package.json'), distPkg, {
   spaces: 2,
 })
 
-await $`npm i --production`
+runNpm(['i', '--production'], distDir)
+
+function runNpm(args, cwd) {
+  const npmExecPath = process.env.npm_execpath
+  const command = npmExecPath ? process.execPath : 'npm'
+  const commandArgs = npmExecPath ? [npmExecPath, ...args] : args
+  const result = spawnSync(command, commandArgs, {
+    cwd,
+    stdio: 'inherit',
+  })
+
+  if (result.error) {
+    throw result.error
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1)
+  }
+}
