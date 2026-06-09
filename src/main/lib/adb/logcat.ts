@@ -1,10 +1,11 @@
 import Emitter from 'licia/Emitter'
 import types from 'licia/types'
 import { Client } from '@devicefarmer/adbkit'
-import { getDeviceStore, getPidNames, setDeviceStore } from './base'
+import { getAdbPath, getDeviceStore, getPidNames, setDeviceStore } from './base'
 import uniqId from 'licia/uniqId'
 import * as window from 'share/main/lib/window'
 import { handleEvent } from 'share/main/lib/util'
+import childProcess from 'node:child_process'
 import {
   IpcCloseLogcat,
   IpcOpenLogcat,
@@ -51,15 +52,83 @@ class Logcat extends Emitter {
   }
 }
 
-const logcats: types.PlainObj<Logcat> = {}
+class KernelLog extends Emitter {
+  private cp?: childProcess.ChildProcessWithoutNullStreams
+  private paused = false
+  private commandIdx = 0
+  private outputReceived = false
+  private readonly commands = [
+    ['shell', 'su', '0', 'cat', '/dev/kmsg'],
+    ['shell', 'su', '-c', 'cat /dev/kmsg'],
+    ['shell', 'dmesg', '-w'],
+  ]
+  constructor(private deviceId: string) {
+    super()
+  }
+  init() {
+    this.start()
+  }
+  close() {
+    this.cp?.kill()
+  }
+  pause() {
+    this.paused = true
+  }
+  resume() {
+    this.paused = false
+  }
+  private start() {
+    this.outputReceived = false
+    const args = this.commands[this.commandIdx]
+    this.cp = childProcess.spawn(getAdbPath(), ['-s', this.deviceId, ...args], {
+      env: { ...process.env },
+    })
+    this.cp.stdout.on('data', (data) => this.onData(data))
+    this.cp.stderr.on('data', (data) => this.onError(data))
+    this.cp.on('close', () => {
+      if (!this.outputReceived && this.commandIdx < this.commands.length - 1) {
+        this.commandIdx++
+        this.start()
+      }
+    })
+  }
+  private onError(data: Buffer) {
+    if (this.commandIdx < this.commands.length - 1) {
+      return
+    }
+    this.onData(data)
+  }
+  private onData(data: Buffer) {
+    this.outputReceived = true
+    if (this.paused) {
+      return
+    }
+    const lines = data.toString().split(/\r?\n/)
+    for (let i = 0, len = lines.length; i < len; i++) {
+      const line = lines[i]
+      if (!line) {
+        continue
+      }
+      this.emit('entry', toKernelEntry(line))
+    }
+  }
+}
 
-const openLogcat: IpcOpenLogcat = async function (deviceId) {
-  const device = await client.getDevice(deviceId)
-  const reader = await device.openLogcat({
-    clear: true,
-  })
-  const logcat = new Logcat(reader)
-  await logcat.init(deviceId)
+const logcats: types.PlainObj<Logcat | KernelLog> = {}
+
+const openLogcat: IpcOpenLogcat = async function (deviceId, source = 'logcat') {
+  let logcat: Logcat | KernelLog
+  if (source === 'kernel') {
+    logcat = new KernelLog(deviceId)
+    logcat.init()
+  } else {
+    const device = await client.getDevice(deviceId)
+    const reader = await device.openLogcat({
+      clear: true,
+    })
+    logcat = new Logcat(reader)
+    await logcat.init(deviceId)
+  }
   const logcatId = uniqId('logcat')
   logcat.on('entry', (entry) => {
     window.sendTo('main', 'logcatEntry', logcatId, entry)
@@ -67,6 +136,36 @@ const openLogcat: IpcOpenLogcat = async function (deviceId) {
   logcats[logcatId] = logcat
 
   return logcatId
+}
+
+function toKernelEntry(line: string) {
+  const match = line.match(/^(\d+),\d+,\d+,-;(.+)$/)
+  const priority = match ? toLogcatPriority(parseInt(match[1], 10)) : 4
+  return {
+    date: new Date(),
+    pid: 0,
+    tid: 0,
+    priority,
+    tag: 'kernel',
+    package: 'kernel',
+    message: match ? match[2] : line,
+  }
+}
+
+function toLogcatPriority(priority: number) {
+  if (priority <= 3) {
+    return 6
+  }
+  if (priority === 4) {
+    return 5
+  }
+  if (priority === 5) {
+    return 4
+  }
+  if (priority === 6) {
+    return 3
+  }
+  return 2
 }
 
 const pauseLogcat: IpcPauseLogcat = async function (logcatId) {

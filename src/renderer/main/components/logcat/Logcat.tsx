@@ -1,6 +1,5 @@
 import { observer } from 'mobx-react-lite'
 import LunaToolbar, {
-  LunaToolbarInput,
   LunaToolbarSelect,
   LunaToolbarSeparator,
   LunaToolbarSpace,
@@ -18,13 +17,28 @@ import copy from 'licia/copy'
 import download from 'licia/download'
 import toStr from 'licia/toStr'
 import { t } from 'common/util'
+import { IpcLogSource } from 'common/types'
 import ToolbarIcon from 'share/renderer/components/ToolbarIcon'
 import contextMenu from 'share/renderer/lib/contextMenu'
+import Style from './Logcat.module.scss'
+import className from 'licia/className'
+
+const KERNEL_FILTERS = [
+  ['\u5145\u7535', 'charger|battery|typec|usb|sgm|mtk_pbm'],
+  ['\u6444\u50cf\u5934', 'camera|sensor|imgsensor|cam_cal|isp|mipi'],
+  ['TP', 'touch|tp|goodix|focaltech|fts|synaptics'],
+  ['LCD', 'lcd|lcm|panel|display|dsi|drm|backlight'],
+  ['\u97f3\u9891', 'audio|codec|speaker|headset|aw87'],
+  ['\u4f11\u7720', 'suspend|resume|wakeup|sleep'],
+  ['\u5f02\u5e38', 'panic|oops|watchdog|hang|fatal'],
+] as const
 
 export default observer(function Logcat() {
+  const [source, setSource] = useState<IpcLogSource>('logcat')
   const [view, setView] = useState<'compact' | 'standard'>('standard')
   const [softWrap, setSoftWrap] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [kernelKeyword, setKernelKeyword] = useState('')
   const [filter, setFilter] = useState<{
     priority?: number
     package?: string
@@ -33,6 +47,8 @@ export default observer(function Logcat() {
   const logcatRef = useRef<Logcat>(null)
   const entriesRef = useRef<any[]>([])
   const logcatIdRef = useRef('')
+  const kernelKeywordRef = useRef('')
+  const filterRef = useRef(filter)
 
   const { device } = store
 
@@ -41,14 +57,16 @@ export default observer(function Logcat() {
       if (logcatIdRef.current !== id) {
         return
       }
+      entriesRef.current.push(entry)
       if (logcatRef.current) {
-        logcatRef.current.append(entry)
-        entriesRef.current.push(entry)
+        if (source !== 'kernel' || matchKernelEntry(entry, kernelKeywordRef.current)) {
+          logcatRef.current.append(entry)
+        }
       }
     }
     const offLogcatEntry = main.on('logcatEntry', onLogcatEntry)
     if (device) {
-      main.openLogcat(device.id).then((id) => {
+      main.openLogcat(device.id, source).then((id) => {
         logcatIdRef.current = id
       })
     }
@@ -59,7 +77,18 @@ export default observer(function Logcat() {
         main.closeLogcat(logcatIdRef.current)
       }
     }
-  }, [])
+  }, [source])
+
+  useEffect(() => {
+    kernelKeywordRef.current = kernelKeyword
+    if (source === 'kernel') {
+      refreshKernelEntries()
+    }
+  }, [kernelKeyword])
+
+  useEffect(() => {
+    filterRef.current = filter
+  }, [filter])
 
   if (store.panel !== 'logcat') {
     if (!paused && logcatIdRef.current) {
@@ -73,15 +102,7 @@ export default observer(function Logcat() {
 
   function save() {
     const data = map(entriesRef.current, (entry) => {
-      return trim(
-        `${dateFormat(entry.date, 'mm-dd HH:MM:ss.l')} ${rpad(
-          entry.pid,
-          5,
-          ' '
-        )} ${rpad(entry.tid, 5, ' ')} ${toLetter(entry.priority)} ${
-          entry.tag
-        }: ${entry.message}`
-      )
+      return formatEntry(entry)
     }).join('\n')
     const name = `${store.device ? store.device.name : 'logcat'}.${dateFormat(
       'yyyymmddHH'
@@ -97,6 +118,20 @@ export default observer(function Logcat() {
     entriesRef.current = []
   }
 
+  function refreshKernelEntries() {
+    const logcat = logcatRef.current
+    if (!logcat) {
+      return
+    }
+
+    logcat.clear()
+    for (const entry of entriesRef.current) {
+      if (matchKernelEntry(entry, kernelKeywordRef.current)) {
+        logcat.append(entry)
+      }
+    }
+  }
+
   const onContextMenu = (e: PointerEvent, entry: any) => {
     e.preventDefault()
     const logcat = logcatRef.current!
@@ -107,7 +142,7 @@ export default observer(function Logcat() {
           if (logcat.hasSelection()) {
             copy(logcat.getSelection())
           } else if (entry) {
-            copy(entry.message)
+            copy(formatEntry(entry))
           }
         },
       },
@@ -129,30 +164,36 @@ export default observer(function Logcat() {
         className="panel-toolbar"
         onChange={(key, val) => {
           switch (key) {
+            case 'source':
+              setSource(val)
+              clear()
+              if (logcatIdRef.current) {
+                main.closeLogcat(logcatIdRef.current)
+                logcatIdRef.current = ''
+              }
+              break
             case 'view':
               setView(val)
               break
             case 'priority':
               setFilter({
-                ...filter,
+                ...filterRef.current,
                 priority: toNum(val),
-              })
-              break
-            case 'package':
-              setFilter({
-                ...filter,
-                package: val,
-              })
-              break
-            case 'tag':
-              setFilter({
-                ...filter,
-                tag: val,
               })
               break
           }
         }}
       >
+        <LunaToolbarSelect
+          keyName="source"
+          disabled={!device}
+          value={source}
+          options={{
+            Logcat: 'logcat',
+            Kernel: 'kernel',
+          }}
+        />
+        <LunaToolbarSeparator />
         <LunaToolbarSelect
           keyName="view"
           disabled={!device}
@@ -175,16 +216,36 @@ export default observer(function Logcat() {
             ERROR: '6',
           }}
         />
-        <LunaToolbarInput
-          keyName="package"
-          placeholder={t('package')}
-          value={filter.package || ''}
-        />
-        <LunaToolbarInput
-          keyName="tag"
-          placeholder={t('tag')}
-          value={filter.tag || ''}
-        />
+        {source === 'kernel' ? (
+          <FilterInput
+            placeholder={'\u5185\u5bb9\u5173\u952e\u5b57'}
+            value={kernelKeyword}
+            onChange={setKernelKeyword}
+          />
+        ) : (
+          <>
+            <FilterInput
+              placeholder={t('package')}
+              value={filter.package || ''}
+              onChange={(val) =>
+                setFilter({
+                  ...filterRef.current,
+                  package: val,
+                })
+              }
+            />
+            <FilterInput
+              placeholder={t('tag')}
+              value={filter.tag || ''}
+              onChange={(val) =>
+                setFilter({
+                  ...filterRef.current,
+                  tag: val,
+                })
+              }
+            />
+          </>
+        )}
         <LunaToolbarSpace />
         <ToolbarIcon
           icon="save"
@@ -214,7 +275,7 @@ export default observer(function Logcat() {
               clear()
             }
             if (device) {
-              main.openLogcat(device.id).then((id) => {
+              main.openLogcat(device.id, source).then((id) => {
                 logcatIdRef.current = id
               })
             }
@@ -242,19 +303,140 @@ export default observer(function Logcat() {
           disabled={!device}
         />
       </LunaToolbar>
-      <LunaLogcat
-        className="panel-body"
-        maxNum={10000}
-        filter={filter}
-        wrapLongLines={softWrap}
-        onContextMenu={onContextMenu}
-        view={view}
-        onCreate={(logcat) => (logcatRef.current = logcat)}
+      {source === 'kernel' && (
+        <div className={Style.kernelFilters}>
+          <span>{'\u5feb\u6377\u7b5b\u9009'}</span>
+          {map(KERNEL_FILTERS, ([title, keyword]) => (
+            <button
+              key={title}
+              className={kernelKeyword === keyword ? Style.active : ''}
+              onClick={() =>
+                setKernelKeyword(kernelKeyword === keyword ? '' : keyword)
+              }
+            >
+              {title}
+            </button>
+          ))}
+          <button
+            className={!kernelKeyword ? Style.active : ''}
+            onClick={() => setKernelKeyword('')}
+          >
+            {'\u5168\u90e8'}
+          </button>
+        </div>
+      )}
+      <div
+        className={className('panel-body', Style.logcatBody)}
+        tabIndex={0}
+        onKeyDown={onLogcatKeyDown}
+        onDoubleClick={onLogcatDoubleClick}
+      >
+        <LunaLogcat
+          className={Style.logcat}
+          maxNum={10000}
+          filter={source === 'kernel' ? { priority: filter.priority } : filter}
+          wrapLongLines={softWrap}
+          onContextMenu={onContextMenu}
+          view={view}
+          onCreate={(logcat) => (logcatRef.current = logcat)}
+        />
+      </div>
+    </div>
+  )
+
+  function onLogcatKeyDown(e: React.KeyboardEvent) {
+    if (!isCopyShortcut(e)) {
+      return
+    }
+    const copied = copyLogcatSelection()
+    if (copied) {
+      e.preventDefault()
+    }
+  }
+
+  function onLogcatDoubleClick(e: React.MouseEvent) {
+    const entry = getEntryFromTarget(e.target)
+    if (entry) {
+      copy(formatEntry(entry))
+    }
+  }
+
+  function copyLogcatSelection() {
+    const logcat = logcatRef.current
+    if (logcat?.hasSelection()) {
+      copy(logcat.getSelection())
+      return true
+    }
+    const selection = window.getSelection()
+    if (selection && selection.toString()) {
+      copy(selection.toString())
+      return true
+    }
+    return false
+  }
+
+  function getEntryFromTarget(target: EventTarget | null) {
+    const el = target instanceof Element ? target : null
+    const entryEl = el?.closest('[data-idx]')
+    if (!entryEl) {
+      return null
+    }
+    const idx = Number(entryEl.getAttribute('data-idx'))
+    return entriesRef.current[idx] || null
+  }
+})
+
+function FilterInput(props: {
+  placeholder: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className={Style.filterInputItem}>
+      <input
+        value={props.value}
+        placeholder={props.placeholder}
+        spellCheck={false}
+        onChange={(e) => props.onChange(e.target.value)}
+        onKeyDown={(e) => e.stopPropagation()}
+        onPaste={(e) => e.stopPropagation()}
+        onCopy={(e) => e.stopPropagation()}
+        onCut={(e) => e.stopPropagation()}
       />
     </div>
   )
-})
+}
 
 function toLetter(priority: number) {
   return ['?', '?', 'V', 'D', 'I', 'W', 'E'][priority]
+}
+
+function formatEntry(entry: any) {
+  return trim(
+    `${dateFormat(entry.date, 'mm-dd HH:MM:ss.l')} ${rpad(
+      entry.pid,
+      5,
+      ' '
+    )} ${rpad(entry.tid, 5, ' ')} ${toLetter(entry.priority)} ${
+      entry.tag
+    }: ${entry.message}`
+  )
+}
+
+function isCopyShortcut(e: React.KeyboardEvent) {
+  return (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c'
+}
+
+function matchKernelEntry(entry: any, keyword: string) {
+  const keywords = keyword
+    .toLowerCase()
+    .split(/[|,\s]+/)
+    .filter(Boolean)
+
+  if (!keywords.length) {
+    return true
+  }
+
+  const message = `${entry.tag || ''} ${entry.message || ''}`.toLowerCase()
+  return keywords.some((keyword) => message.includes(keyword))
 }
