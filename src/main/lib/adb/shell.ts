@@ -38,17 +38,30 @@ class ShellProtocol {
     }> = []
 
     for (let i = 0, len = buf.length; i < len; ) {
+      if (len - i < 5) {
+        break
+      }
       const id = buf.readUInt8(i)
-      const len = buf.readUInt32LE(i + 1)
-      const data = buf.slice(i + 5, i + 5 + len)
+      const dataLen = buf.readUInt32LE(i + 1)
+      if (len - i - 5 < dataLen) {
+        break
+      }
+      const data = buf.slice(i + 5, i + 5 + dataLen)
       result.push({
         id,
         data,
       })
-      i += 5 + len
+      i += 5 + dataLen
     }
 
     return result
+  }
+
+  static getPacketLength(buf) {
+    if (buf.length < 5) {
+      return 0
+    }
+    return 5 + buf.readUInt32LE(1)
   }
 }
 
@@ -68,6 +81,8 @@ class Protocol {
 class AdbPty extends Emitter {
   private connection: any
   private useV2 = true
+  private readBuffer = Buffer.alloc(0)
+  private killed = false
   constructor(connection: any) {
     super()
 
@@ -89,11 +104,22 @@ class AdbPty extends Emitter {
       socket.on('readable', () => {
         const buf = socket.read()
         if (buf) {
-          const packets = ShellProtocol.decodeData(buf)
+          this.readBuffer = Buffer.concat([this.readBuffer, buf])
+          const packetEnd = this.getPacketEnd()
+          if (packetEnd === 0) {
+            return
+          }
+
+          const packets = ShellProtocol.decodeData(
+            this.readBuffer.slice(0, packetEnd)
+          )
+          this.readBuffer = this.readBuffer.slice(packetEnd)
           for (let i = 0, len = packets.length; i < len; i++) {
             const { id, data } = packets[i]
-            if (id === ShellProtocol.STDOUT) {
+            if (id === ShellProtocol.STDOUT || id === ShellProtocol.STDERR) {
               this.emit('data', data.toString('utf8'))
+            } else if (id === ShellProtocol.EXIT) {
+              this.kill()
             }
           }
         }
@@ -107,8 +133,31 @@ class AdbPty extends Emitter {
         }
       })
     }
+
+    connection.socket.on('close', () => {
+      this.killed = true
+      this.emit('close')
+    })
+    connection.socket.on('error', () => {
+      this.killed = true
+      this.emit('close')
+    })
+  }
+  private getPacketEnd() {
+    let end = 0
+    while (end < this.readBuffer.length) {
+      const packetLen = ShellProtocol.getPacketLength(this.readBuffer.slice(end))
+      if (!packetLen || this.readBuffer.length - end < packetLen) {
+        break
+      }
+      end += packetLen
+    }
+    return end
   }
   resize(cols: number, rows: number) {
+    if (this.killed) {
+      return
+    }
     if (this.useV2) {
       this.connection.socket.write(
         ShellProtocol.encodeData(
@@ -119,6 +168,9 @@ class AdbPty extends Emitter {
     }
   }
   write(data: string) {
+    if (this.killed) {
+      return
+    }
     if (this.useV2) {
       this.connection.socket.write(
         ShellProtocol.encodeData(ShellProtocol.STDIN, Buffer.from(data))
@@ -128,6 +180,10 @@ class AdbPty extends Emitter {
     }
   }
   kill() {
+    if (this.killed) {
+      return
+    }
+    this.killed = true
     this.connection.end()
   }
 }
@@ -151,21 +207,24 @@ const createShell: IpcCreateShell = async function (deviceId) {
   adbPty.on('data', (data) => {
     window.sendTo('main', 'shellData', sessionId, data)
   })
+  adbPty.on('close', () => {
+    delete ptys[sessionId]
+  })
   ptys[sessionId] = adbPty
 
   return sessionId
 }
 
 const writeShell: IpcWriteShell = async function (sessionId, data) {
-  ptys[sessionId].write(data)
+  ptys[sessionId]?.write(data)
 }
 
 const resizeShell: IpcResizeShell = async function (sessionId, cols, rows) {
-  ptys[sessionId].resize(cols, rows)
+  ptys[sessionId]?.resize(cols, rows)
 }
 
 const killShell: IpcKillShell = async function (sessionId) {
-  ptys[sessionId].kill()
+  ptys[sessionId]?.kill()
   delete ptys[sessionId]
 }
 

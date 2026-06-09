@@ -23,8 +23,11 @@ import isHidden from 'licia/isHidden'
 
 interface ITermProps {
   visible: boolean
+  history: string[]
   onSessionIdChange: (id: string) => void
   onCreate: (terminal: Terminal) => void
+  onCreateInputSetter: (setter: (value: string) => void) => void
+  onCommand: (command: string) => void
 }
 
 export default observer(function Term(props: ITermProps) {
@@ -32,10 +35,19 @@ export default observer(function Term(props: ITermProps) {
   const termRef = useRef<Terminal>(null)
   const fitAddonRef = useRef<FitAddon>(null)
   const sessionIdRef = useRef('')
+  const inputRef = useRef('')
+  const historyRef = useRef<string[]>(props.history)
+  const historyIdxRef = useRef(-1)
+  const historyDraftRef = useRef('')
+  const outputBufferRef = useRef<string[]>([])
+  const writingRef = useRef(false)
+  const disposedRef = useRef(false)
 
   const { device } = store
+  historyRef.current = props.history
 
   useEffect(() => {
+    disposedRef.current = false
     const term = new Terminal({
       allowProposedApi: true,
       fontSize: 14,
@@ -65,19 +77,20 @@ export default observer(function Term(props: ITermProps) {
     term.open(terminalRef.current!)
     termRef.current = term
     props.onCreate(term)
+    props.onCreateInputSetter(setInput)
 
     function onShellData(id, data) {
       if (sessionIdRef.current !== id) {
         return
       }
-      term.write(data)
+      writeOutput(data)
     }
     const offShellData = main.on('shellData', onShellData)
 
     if (device) {
       main.createShell(device.id).then((id) => {
         setSessionId(id)
-        term.onData((data) => main.writeShell(sessionIdRef.current, data))
+        term.onData(handleTermData)
         term.onResize((size) => {
           main.resizeShell(sessionIdRef.current, size.cols, size.rows)
         })
@@ -86,6 +99,8 @@ export default observer(function Term(props: ITermProps) {
     }
 
     return () => {
+      disposedRef.current = true
+      outputBufferRef.current = []
       offShellData()
       if (sessionIdRef.current) {
         main.killShell(sessionIdRef.current)
@@ -118,12 +133,163 @@ export default observer(function Term(props: ITermProps) {
     props.onSessionIdChange(id)
   }
 
+  function writeOutput(data: string) {
+    outputBufferRef.current.push(data)
+    flushOutput()
+  }
+
+  function flushOutput() {
+    const term = termRef.current
+    if (
+      disposedRef.current ||
+      !term ||
+      writingRef.current ||
+      !outputBufferRef.current.length
+    ) {
+      return
+    }
+
+    writingRef.current = true
+    const chunk = outputBufferRef.current.splice(0, 32).join('')
+    term.write(chunk, () => {
+      if (disposedRef.current) {
+        return
+      }
+      writingRef.current = false
+      if (outputBufferRef.current.length) {
+        requestAnimationFrame(flushOutput)
+      }
+    })
+  }
+
+  function handleTermData(data: string) {
+    if (handleHistoryKeys(data)) {
+      return
+    }
+
+    trackInput(data)
+    main.writeShell(sessionIdRef.current, data)
+  }
+
+  function handleHistoryKeys(data: string) {
+    if (!data || data.length % 3 !== 0) {
+      return false
+    }
+
+    for (let i = 0; i < data.length; i += 3) {
+      if (
+        data[i] !== '\x1b' ||
+        data[i + 1] !== '[' ||
+        (data[i + 2] !== 'A' && data[i + 2] !== 'B')
+      ) {
+        return false
+      }
+    }
+
+    for (let i = 0; i < data.length; i += 3) {
+      showHistory(data[i + 2] === 'A' ? -1 : 1)
+    }
+    return true
+  }
+
+  function showHistory(direction: -1 | 1) {
+    const history = historyRef.current
+    if (!history.length) {
+      return
+    }
+
+    if (historyIdxRef.current < 0) {
+      historyDraftRef.current = inputRef.current
+      if (direction === -1) {
+        historyIdxRef.current = 0
+        replaceInput(history[0])
+        return
+      }
+      return
+    }
+
+    const nextIdx = historyIdxRef.current + direction
+    if (nextIdx < 0) {
+      return
+    }
+    if (nextIdx >= history.length) {
+      historyIdxRef.current = -1
+      replaceInput(historyDraftRef.current)
+      return
+    }
+
+    historyIdxRef.current = nextIdx
+    replaceInput(history[nextIdx])
+  }
+
+  function replaceInput(value: string) {
+    inputRef.current = value
+    main.writeShell(sessionIdRef.current, `\x15${value}`)
+  }
+
+  function trackInput(data: string) {
+    for (let i = 0; i < data.length; i++) {
+      const char = data[i]
+      if (char === '\x1b') {
+        i = skipEscapeSequence(data, i)
+        continue
+      }
+      if (char === '\r' || char === '\n') {
+        commitInput()
+        continue
+      }
+      if (char === '\x7f' || char === '\b') {
+        inputRef.current = inputRef.current.slice(0, -1)
+        historyIdxRef.current = -1
+        continue
+      }
+      if (char === '\x03' || char === '\x15') {
+        inputRef.current = ''
+        historyIdxRef.current = -1
+        continue
+      }
+      if (char >= ' ') {
+        inputRef.current += char
+        historyIdxRef.current = -1
+      }
+    }
+  }
+
+  function skipEscapeSequence(data: string, start: number) {
+    if (data[start + 1] !== '[') {
+      return start
+    }
+    for (let i = start + 2; i < data.length; i++) {
+      const code = data.charCodeAt(i)
+      if (code >= 0x40 && code <= 0x7e) {
+        return i
+      }
+    }
+    return data.length - 1
+  }
+
+  function commitInput() {
+    const input = inputRef.current.trim()
+    if (input) {
+      props.onCommand(input)
+    }
+    inputRef.current = ''
+    historyIdxRef.current = -1
+    historyDraftRef.current = ''
+  }
+
   async function pasteClipboard() {
     const text = await navigator.clipboard.readText()
     if (text) {
+      trackInput(text)
       main.writeShell(sessionIdRef.current, text)
       termRef.current?.focus()
     }
+  }
+
+  function setInput(value: string) {
+    replaceInput(value)
+    termRef.current?.focus()
   }
 
   const onContextMenu = (e: React.MouseEvent) => {
@@ -188,6 +354,17 @@ export default observer(function Term(props: ITermProps) {
     contextMenu(e, template)
   }
 
+  const onMouseUp = (e: React.MouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+    const term = termRef.current
+    if (term?.hasSelection()) {
+      copy(term.getSelection())
+      term.focus()
+    }
+  }
+
   return (
     <>
       <div
@@ -195,6 +372,7 @@ export default observer(function Term(props: ITermProps) {
         style={{ display: props.visible ? 'block' : 'none' }}
         ref={terminalRef}
         onContextMenu={onContextMenu}
+        onMouseUp={onMouseUp}
       />
     </>
   )

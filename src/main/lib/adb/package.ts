@@ -56,23 +56,36 @@ const startPackage: IpcStartPackage = async function (deviceId, pkg) {
 }
 
 const installPackage: IpcInstallPackage = async function (deviceId, apkPath) {
-  const device = await client.getDevice(deviceId)
   try {
-    await device.install(apkPath)
+    await installWithArgs(deviceId, apkPath, ['-r', '-t', '-d', '-g'])
   } catch (err) {
     if (!isLowTargetSdkInstallError(err)) {
       throw err
     }
-    const { stdout, stderr, code } = await spawnAdb([
-      '-s',
-      deviceId,
-      'install',
+    await installWithArgs(deviceId, apkPath, [
+      '-r',
+      '-t',
+      '-d',
+      '-g',
       '--bypass-low-target-sdk-block',
-      apkPath,
     ])
-    if (code !== 0) {
-      throw new Error(stderr || stdout || 'Failed to install package')
-    }
+  }
+}
+
+async function installWithArgs(
+  deviceId: string,
+  apkPath: string,
+  installArgs: string[]
+) {
+  const { stdout, stderr, code } = await spawnAdb([
+    '-s',
+    deviceId,
+    'install',
+    ...installArgs,
+    apkPath,
+  ])
+  if (code !== 0) {
+    throw new Error(stderr || stdout || 'Failed to install package')
   }
 }
 
