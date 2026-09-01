@@ -14,7 +14,7 @@ if (isMac && process.arch !== 'arm64') {
 const config = {
   appId: pkg.appId,
   directories: {
-    output: `../release/${pkg.version}`,
+    output: process.env.AYA_RELEASE_DIR || `../release/${pkg.version}`,
   },
   files: ['main', 'preload', 'renderer'],
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',

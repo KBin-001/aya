@@ -1,4 +1,4 @@
-import { lazy } from 'react'
+import { lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import { t, i18n } from 'common/util'
 import getUrlParam from 'licia/getUrlParam'
@@ -76,7 +76,11 @@ function renderApp() {
 
   preload.setTitle(title)
 
-  createRoot(container).render(<App />)
+  createRoot(container).render(
+    <Suspense fallback={null}>
+      <App />
+    </Suspense>
+  )
 }
 
 ;(async function () {

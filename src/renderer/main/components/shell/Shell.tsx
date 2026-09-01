@@ -26,6 +26,8 @@ const HISTORY_LIMIT = 50
 const HISTORY_STORAGE_KEY = 'aya.shell.history'
 const DEFAULT_MTK_LOG_SOURCE = '/sdcard/debuglogger'
 const MTK_LOG_SOURCE_STORAGE_KEY = 'aya.shell.mtkLogSource'
+const MTK_LOG_SOURCE2_STORAGE_KEY = 'aya.shell.mtkLogSource2'
+const MTK_LOG_ACTIVE_STORAGE_KEY = 'aya.shell.mtkLogActive'
 const WIFI_STORAGE_KEY = 'aya.shell.wifi'
 
 interface IShell {
@@ -46,6 +48,8 @@ export default observer(function Shell() {
   })
   const [history, setHistory] = useState<string[]>(loadHistory)
   const [mtkLogSource, setMtkLogSource] = useState(loadMtkLogSource)
+  const [mtkLogSource2, setMtkLogSource2] = useState(loadMtkLogSource2)
+  const [mtkLogActive, setMtkLogActive] = useState(loadMtkLogActive)
   const [wifi, setWifi] = useState<IWifiConfig>(loadWifi)
   const [runningScript, setRunningScript] = useState('')
   const [unlockRemountVisible, setUnlockRemountVisible] = useState(false)
@@ -169,7 +173,8 @@ export default observer(function Shell() {
     setRunningScript(script.id)
     try {
       if (script.action === 'exportMtkLog') {
-        const dest = await main.exportMtkLog(device.id, mtkLogSource)
+        const source = mtkLogActive === '1' ? mtkLogSource : mtkLogSource2
+        const dest = await main.exportMtkLog(device.id, source)
         notify(`${script.title} completed: ${dest}`, { icon: 'success' })
       } else if (script.action === 'unlockRemount') {
         setUnlockRemountVisible(true)
@@ -211,7 +216,7 @@ export default observer(function Shell() {
     const isConnectWifi = script.action === 'connectWifi'
     let title = script.description
     if (isExportMtkLog) {
-      title = `${script.description}\n当前路径：${mtkLogSource}\n右键修改路径`
+      title = `${script.description}\n路径1：${mtkLogSource}\n路径2：${mtkLogSource2}\n当前使用：路径${mtkLogActive}\n右键切换 / 修改路径`
     } else if (isConnectWifi) {
       title = `${script.description}\n当前WiFi：${wifi.ssid || '未配置'}\n右键修改名称和密码`
     }
@@ -526,28 +531,71 @@ export default observer(function Shell() {
     localStorage.setItem(MTK_LOG_SOURCE_STORAGE_KEY, source)
   }
 
+  function updateMtkLogSource2(source: string) {
+    setMtkLogSource2(source)
+    localStorage.setItem(MTK_LOG_SOURCE2_STORAGE_KEY, source)
+  }
+
+  function switchMtkLogPath(active: '1' | '2') {
+    if (active === mtkLogActive) {
+      return
+    }
+    setMtkLogActive(active)
+    localStorage.setItem(MTK_LOG_ACTIVE_STORAGE_KEY, active)
+    notify(`已切换为路径${active}`, { icon: 'info' })
+  }
+
   function showMtkLogMenu(e: React.MouseEvent) {
     e.preventDefault()
+    const pathLabel = (index: '1' | '2', source: string) =>
+      `${mtkLogActive === index ? '✓' : '○'} 路径${index}${
+        mtkLogActive === index ? '（当前使用）' : ''
+      }: ${source}`
     contextMenu(e, [
       {
-        label: `当前路径: ${mtkLogSource}`,
+        label: pathLabel('1', mtkLogSource),
+        click() {
+          switchMtkLogPath('1')
+        },
+      },
+      {
+        label: pathLabel('2', mtkLogSource2),
+        click() {
+          switchMtkLogPath('2')
+        },
       },
       {
         type: 'separator',
       },
       {
-        label: '修改MTKLog路径',
+        label: '修改路径1',
         async click() {
-          const source = await LunaModal.prompt('MTKLog路径', mtkLogSource)
+          const source = await LunaModal.prompt('MTKLog路径1', mtkLogSource)
           if (source) {
             updateMtkLogSource(source)
           }
         },
       },
       {
+        label: '修改路径2',
+        async click() {
+          const source = await LunaModal.prompt('MTKLog路径2', mtkLogSource2)
+          if (source) {
+            updateMtkLogSource2(source)
+          }
+        },
+      },
+      {
+        type: 'separator',
+      },
+      {
         label: '恢复默认路径',
         click() {
-          updateMtkLogSource(DEFAULT_MTK_LOG_SOURCE)
+          if (mtkLogActive === '1') {
+            updateMtkLogSource(DEFAULT_MTK_LOG_SOURCE)
+          } else {
+            updateMtkLogSource2(DEFAULT_MTK_LOG_SOURCE)
+          }
         },
       },
     ])
@@ -1044,6 +1092,16 @@ function getUnlockRemountSteps(): Array<{
 function loadMtkLogSource() {
   const source = localStorage.getItem(MTK_LOG_SOURCE_STORAGE_KEY)
   return source || DEFAULT_MTK_LOG_SOURCE
+}
+
+function loadMtkLogSource2() {
+  const source = localStorage.getItem(MTK_LOG_SOURCE2_STORAGE_KEY)
+  return source || DEFAULT_MTK_LOG_SOURCE
+}
+
+function loadMtkLogActive(): '1' | '2' {
+  const active = localStorage.getItem(MTK_LOG_ACTIVE_STORAGE_KEY)
+  return active === '2' ? '2' : '1'
 }
 
 function loadWifi(): IWifiConfig {
