@@ -731,16 +731,21 @@ async function isWifiEnabled(deviceId: string) {
 
 const MTK_LOG_OUTPUT_DIR = 'D:\\桌面\\MTK_LOG'
 
-const exportMtkLog: IpcExportMtkLog = async function (deviceId, sourcePath) {
+const exportMtkLog: IpcExportMtkLog = async function (
+  deviceId,
+  sourcePath,
+  outputDir
+) {
   sourcePath = trim(sourcePath)
   if (!sourcePath) {
     throw new Error('MTK log source path is empty')
   }
+  outputDir = trim(outputDir) || MTK_LOG_OUTPUT_DIR
 
-  await fs.ensureDir(MTK_LOG_OUTPUT_DIR)
-  const folderName = `${formatTime(new Date())}debuglogger`
-  const dest = path.join(MTK_LOG_OUTPUT_DIR, folderName)
-  const result = await pullMtkLog(deviceId, sourcePath, folderName)
+  await fs.ensureDir(outputDir)
+  const folderName = `${formatTime(new Date())}-debuglogger`
+  const dest = path.join(outputDir, folderName)
+  const result = await pullMtkLog(deviceId, sourcePath, folderName, outputDir)
   if (result.code === 0) {
     return dest
   }
@@ -749,7 +754,7 @@ const exportMtkLog: IpcExportMtkLog = async function (deviceId, sourcePath) {
   await sleep(2000)
   await spawnAdb(['-s', deviceId, 'wait-for-device'])
 
-  const retry = await pullMtkLog(deviceId, sourcePath, folderName)
+  const retry = await pullMtkLog(deviceId, sourcePath, folderName, outputDir)
   if (retry.code !== 0) {
     throw new Error(retry.stderr || retry.stdout || 'Export MTK log failed')
   }
@@ -757,10 +762,15 @@ const exportMtkLog: IpcExportMtkLog = async function (deviceId, sourcePath) {
   return dest
 }
 
-function pullMtkLog(deviceId: string, sourcePath: string, folderName: string) {
+function pullMtkLog(
+  deviceId: string,
+  sourcePath: string,
+  folderName: string,
+  outputDir: string
+) {
   return spawnAdbWithCwd(
     ['-s', deviceId, 'pull', sourcePath, folderName],
-    MTK_LOG_OUTPUT_DIR
+    outputDir
   )
 }
 
@@ -791,9 +801,11 @@ function spawnAdbWithCwd(args: string[], cwd: string) {
 
 function formatTime(date: Date) {
   const pad = (num: number) => num.toString().padStart(2, '0')
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
     date.getDate()
-  )}${pad(date.getHours())}${pad(date.getMinutes())}`
+  )}-${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(
+    date.getSeconds()
+  )}`
 }
 
 const inputKey: IpcInputKey = async function (deviceId, keyCode) {

@@ -113,7 +113,8 @@ export type IpcConnectWifi = (
 }>
 export type IpcExportMtkLog = (
   deviceId: string,
-  sourcePath: string
+  sourcePath: string,
+  outputDir: string
 ) => Promise<string>
 export interface IUnlockRemountEnv {
   adbPath: string

@@ -28,6 +28,8 @@ const DEFAULT_MTK_LOG_SOURCE = '/sdcard/debuglogger'
 const MTK_LOG_SOURCE_STORAGE_KEY = 'aya.shell.mtkLogSource'
 const MTK_LOG_SOURCE2_STORAGE_KEY = 'aya.shell.mtkLogSource2'
 const MTK_LOG_ACTIVE_STORAGE_KEY = 'aya.shell.mtkLogActive'
+const DEFAULT_MTK_LOG_OUTPUT_DIR = 'D:\\桌面\\MTK_LOG'
+const MTK_LOG_OUTPUT_DIR_STORAGE_KEY = 'aya.shell.mtkLogOutputDir'
 const WIFI_STORAGE_KEY = 'aya.shell.wifi'
 
 interface IShell {
@@ -50,6 +52,9 @@ export default observer(function Shell() {
   const [mtkLogSource, setMtkLogSource] = useState(loadMtkLogSource)
   const [mtkLogSource2, setMtkLogSource2] = useState(loadMtkLogSource2)
   const [mtkLogActive, setMtkLogActive] = useState(loadMtkLogActive)
+  const [mtkLogOutputDir, setMtkLogOutputDir] = useState(
+    loadMtkLogOutputDir
+  )
   const [wifi, setWifi] = useState<IWifiConfig>(loadWifi)
   const [runningScript, setRunningScript] = useState('')
   const [unlockRemountVisible, setUnlockRemountVisible] = useState(false)
@@ -174,7 +179,11 @@ export default observer(function Shell() {
     try {
       if (script.action === 'exportMtkLog') {
         const source = mtkLogActive === '1' ? mtkLogSource : mtkLogSource2
-        const dest = await main.exportMtkLog(device.id, source)
+        const dest = await main.exportMtkLog(
+          device.id,
+          source,
+          mtkLogOutputDir
+        )
         notify(`${script.title} completed: ${dest}`, { icon: 'success' })
       } else if (script.action === 'unlockRemount') {
         setUnlockRemountVisible(true)
@@ -216,7 +225,7 @@ export default observer(function Shell() {
     const isConnectWifi = script.action === 'connectWifi'
     let title = script.description
     if (isExportMtkLog) {
-      title = `${script.description}\n路径1：${mtkLogSource}\n路径2：${mtkLogSource2}\n当前使用：路径${mtkLogActive}\n右键切换 / 修改路径`
+      title = `${script.description}\n路径1：${mtkLogSource}\n路径2：${mtkLogSource2}\n当前使用：路径${mtkLogActive}\n导出路径：${mtkLogOutputDir}\n右键切换 / 修改路径`
     } else if (isConnectWifi) {
       title = `${script.description}\n当前WiFi：${wifi.ssid || '未配置'}\n右键修改名称和密码`
     }
@@ -536,6 +545,11 @@ export default observer(function Shell() {
     localStorage.setItem(MTK_LOG_SOURCE2_STORAGE_KEY, source)
   }
 
+  function updateMtkLogOutputDir(dir: string) {
+    setMtkLogOutputDir(dir)
+    localStorage.setItem(MTK_LOG_OUTPUT_DIR_STORAGE_KEY, dir)
+  }
+
   function switchMtkLogPath(active: '1' | '2') {
     if (active === mtkLogActive) {
       return
@@ -582,6 +596,21 @@ export default observer(function Shell() {
           const source = await LunaModal.prompt('MTKLog路径2', mtkLogSource2)
           if (source) {
             updateMtkLogSource2(source)
+          }
+        },
+      },
+      {
+        type: 'separator',
+      },
+      {
+        label: `导出路径: ${mtkLogOutputDir}`,
+      },
+      {
+        label: '修改导出路径',
+        async click() {
+          const dir = await LunaModal.prompt('MTKLog导出路径', mtkLogOutputDir)
+          if (dir) {
+            updateMtkLogOutputDir(dir)
           }
         },
       },
@@ -950,7 +979,7 @@ function getShellScripts(): IShellScript[] {
       id: 'exportMtkLog',
       title: '\u5bfc\u51faMTKLog',
       color: '#53b1fd',
-      description: 'adb pull <MTKLog路径> D:\\桌面\\MTK_LOG',
+      description: 'adb pull <MTKLog路径> <导出路径>',
       action: 'exportMtkLog',
     },
   ]
@@ -1102,6 +1131,11 @@ function loadMtkLogSource2() {
 function loadMtkLogActive(): '1' | '2' {
   const active = localStorage.getItem(MTK_LOG_ACTIVE_STORAGE_KEY)
   return active === '2' ? '2' : '1'
+}
+
+function loadMtkLogOutputDir() {
+  const dir = localStorage.getItem(MTK_LOG_OUTPUT_DIR_STORAGE_KEY)
+  return dir || DEFAULT_MTK_LOG_OUTPUT_DIR
 }
 
 function loadWifi(): IWifiConfig {
