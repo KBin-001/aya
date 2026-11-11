@@ -23,100 +23,133 @@ import LunaToolbar, {
 } from 'luna-toolbar/react'
 import isEmpty from 'licia/isEmpty'
 import map from 'licia/map'
-import extend from 'licia/extend'
 import className from 'licia/className'
+import { IMetricsSnapshot } from 'common/metrics'
+import ThermalSection from './ThermalSection'
+import BatterySection from './BatterySection'
+
+/** The device is sampled once a second; the charts redraw at their own pace. */
+const SAMPLE_INTERVAL = 1000
+
+type MetricsRef = React.MutableRefObject<IMetricsSnapshot | null>
 
 export default observer(function Performance() {
-  const [uptime, setUptime] = useState(0)
-  const dataRef = useRef({
-    topPackage: {
-      name: '',
-      label: '',
-      pid: 0,
-    },
-    memUsed: 0,
-    memTotal: 0,
-    batteryLevel: 0,
-    batteryTemperature: 0,
-    batteryVoltage: 0,
-    cpuLoads: [],
-    cpus: [],
-    cpuTemperature: 0,
-    fps: 0,
-  })
+  const metricsRef: MetricsRef = useRef(null)
+  const [, setRevision] = useState(0)
+  const [topLabel, setTopLabel] = useState('')
+  const topPackageRef = useRef('')
 
-  const memData = useCallback(() => {
-    return Math.round(dataRef.current.memUsed / 1024 / 1024)
+  useEffect(() => {
+    let disposed = false
+    let timer = 0
+
+    async function labelTopPackage(
+      deviceId: string,
+      snapshot: IMetricsSnapshot,
+    ) {
+      const topPackage = snapshot.topPackage
+      if (
+        !topPackage ||
+        !topPackage.name ||
+        topPackage.name === topPackageRef.current
+      ) {
+        return
+      }
+
+      topPackageRef.current = topPackage.name
+      try {
+        const packageInfos = await main.getPackageInfos(deviceId, [
+          topPackage.name,
+        ])
+        if (!disposed && !isEmpty(packageInfos)) {
+          setTopLabel(packageInfos[0].label)
+        }
+      } catch {
+        if (!disposed) {
+          setTopLabel(topPackage.name)
+        }
+      }
+    }
+
+    async function sample() {
+      const device = store.device
+      if (device && store.panel === 'performance') {
+        try {
+          const snapshot = await main.getMetrics(device.id)
+          if (!disposed) {
+            metricsRef.current = snapshot
+            setRevision((revision) => revision + 1)
+            // Not awaited: a slow package-name lookup must not stretch the
+            // sampling cadence.
+            labelTopPackage(device.id, snapshot)
+          }
+        } catch {
+          // A device that dropped off the bus is not something to report here:
+          // keep the last snapshot on screen and try again on the next tick.
+        }
+      }
+
+      if (!disposed) {
+        timer = window.setTimeout(sample, SAMPLE_INTERVAL)
+      }
+    }
+
+    sample()
+
+    return () => {
+      disposed = true
+      window.clearTimeout(timer)
+    }
   }, [])
 
   const cpuData = useCallback(() => {
-    const cpuLoads = dataRef.current.cpuLoads
-    if (isEmpty(cpuLoads)) {
+    const metrics = metricsRef.current
+    if (!metrics || isEmpty(metrics.cpu.loads)) {
       return 0
     }
-    const cpuLoad = sum(...cpuLoads) / cpuLoads.length
-    return Math.floor(cpuLoad * 100)
+    const loads = metrics.cpu.loads
+    return Math.floor((sum(...loads) / loads.length) * 100)
   }, [])
 
-  const fpsData = useCallback(() => dataRef.current.fps, [])
+  const memData = useCallback(() => {
+    const metrics = metricsRef.current
+    return metrics ? Math.round(metrics.memory.memUsed / 1024 / 1024) : 0
+  }, [])
 
-  const { device } = store
-
-  useEffect(() => {
-    let destroyed = false
-
-    async function getPerformance() {
-      if (device) {
-        if (store.panel === 'performance') {
-          try {
-            main.getUptime(device.id).then(setUptime)
-            main.getPerformance(device.id).then((performance) => {
-              extend(dataRef.current, performance)
-            })
-            main.getTopPackage(device.id).then(async (topPackage) => {
-              extend(dataRef.current.topPackage, topPackage)
-              if (topPackage.name) {
-                const packageInfos = await main.getPackageInfos(device.id, [
-                  topPackage.name,
-                ])
-                dataRef.current.topPackage.label = packageInfos[0].label
-              }
-            })
-            main
-              .getFps(device.id, dataRef.current.topPackage.name)
-              .then((fps) => {
-                dataRef.current.fps = fps
-              })
-          } catch {
-            // ignore
-          }
-        }
-      }
-      if (!destroyed) {
-        setTimeout(getPerformance, 1000)
-      }
-    }
-
-    getPerformance()
-
-    return () => {
-      destroyed = true
-    }
+  const fpsData = useCallback(() => {
+    const metrics = metricsRef.current
+    return metrics && metrics.fps !== null ? metrics.fps : 0
   }, [])
 
   const isDark = store.theme === 'dark'
+  const metrics = metricsRef.current
+  const battery = metrics ? metrics.battery : null
+  const cpu = metrics ? metrics.cpu : null
 
-  const data = dataRef.current
-  const batteryLevel = data.batteryLevel + '%'
-  const batteryVoltage = `${(data.batteryVoltage / 1000).toFixed(2)}V`
-  const batteryTemperature = `${data.batteryTemperature / 10}°C`
+  const batteryLevel =
+    battery && battery.levelPct !== null ? `${battery.levelPct}%` : '--'
+  const batteryVoltage =
+    battery && battery.voltageV !== null ? `${battery.voltageV.toFixed(2)}V` : '--'
+  const batteryTemperature =
+    battery && battery.temperatureC !== null
+      ? `${battery.temperatureC.toFixed(1)}°C`
+      : '--'
   const batteryInfo = `${batteryVoltage} ${batteryTemperature}`
+  const cpuTemperature = cpu && cpu.temperatureC !== null ? `${cpu.temperatureC}°C` : ''
+  const memoryPercent =
+    metrics && metrics.memory.memTotal
+      ? `${Math.round((metrics.memory.memUsed / metrics.memory.memTotal) * 100)}%`
+      : ''
+  const cpus = cpu ? cpu.cpus : []
 
   return (
     <div className={className('panel-with-toolbar', Style.container)}>
       <LunaToolbar className="panel-toolbar">
         <LunaToolbarText
-          text={`${t('uptime')} ${durationFormat(uptime, 'd:hh:mm:ss')}`}
+          text={`${t('uptime')} ${durationFormat(
+            metrics && metrics.uptimeMs !== null ? metrics.uptimeMs : 0,
+            'd:hh:mm:ss',
+          )}`}
         />
         <LunaToolbarSpace />
         <LunaToolbarHtml>
@@ -135,7 +168,7 @@ export default observer(function Performance() {
       </LunaToolbar>
       <div className={className('panel-body', Style.charts)}>
         <LunaPerformanceMonitor
-          title={`CPU ${data.cpuTemperature}°C`}
+          title={`CPU ${cpuTemperature}`}
           data={cpuData}
           theme={store.theme}
           max={100}
@@ -144,16 +177,12 @@ export default observer(function Performance() {
           unit="%"
         />
         <div className={Style.cpuContainer}>
-          {map(data.cpuLoads, (load, idx) => (
-            <Cpu key={idx} index={idx} dataRef={dataRef} load={load} />
+          {map(cpus, (cpu, idx) => (
+            <Cpu key={idx} index={idx} metricsRef={metricsRef} />
           ))}
         </div>
         <LunaPerformanceMonitor
-          title={`${t('memory')} ${
-            data.memUsed
-              ? Math.round((data.memUsed / data.memTotal) * 100) + '%'
-              : ''
-          }`}
+          title={`${t('memory')} ${memoryPercent}`}
           data={memData}
           theme={store.theme}
           smooth={false}
@@ -162,37 +191,44 @@ export default observer(function Performance() {
           unit="MB"
         />
         <LunaPerformanceMonitor
-          title={`FPS ${data.topPackage.label}`}
+          title={`FPS ${topLabel}`}
           data={fpsData}
           theme={store.theme}
           smooth={false}
           height={80}
           color={isDark ? orange6Dark : orange6}
         />
+        <ThermalSection metricsRef={metricsRef} />
+        <BatterySection metricsRef={metricsRef} />
       </div>
     </div>
   )
 })
 
 interface ICpuProps {
-  dataRef: any
+  metricsRef: MetricsRef
   index: number
-  load: number
 }
 
-const Cpu = observer(function (props: ICpuProps) {
-  const cpuData = useCallback(() => {
-    const cpuLoad = props.dataRef.current.cpuLoads[props.index]!
-    return Math.floor(cpuLoad * 100)
+/** Plain component: it renders the ref the panel bumps, not an observable. */
+function Cpu(props: ICpuProps) {
+  const loadData = useCallback(() => {
+    const metrics = props.metricsRef.current
+    if (!metrics) {
+      return 0
+    }
+    return Math.floor((metrics.cpu.loads[props.index] || 0) * 100)
   }, [])
 
   const isDark = store.theme === 'dark'
-  const speed = props.dataRef.current.cpus[props.index]!.speed
+  const metrics = props.metricsRef.current
+  const core = metrics ? metrics.cpu.cpus[props.index] : undefined
+  const speed = core && core.speed !== undefined ? `${core.speed}MHz` : ''
 
   return (
     <LunaPerformanceMonitor
-      title={`CPU${props.index} ${speed}MHz`}
-      data={cpuData}
+      title={`CPU${props.index} ${speed}`}
+      data={loadData}
       theme={store.theme}
       max={100}
       height={50}
@@ -200,4 +236,4 @@ const Cpu = observer(function (props: ICpuProps) {
       unit="%"
     />
   )
-})
+}

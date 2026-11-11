@@ -53,3 +53,127 @@
   border-radius: 1px;
   display: inline-block;
 }
+
+.section {
+  border-top: 1px solid var(--color-border);
+  margin-top: #{$margin-x-s}px;
+  padding-top: #{$padding-x-s}px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: #{$margin-x-x-s}px;
+}
+
+.section-title {
+  font-size: #{$font-size-s-m}px;
+  font-weight: bold;
+  margin-right: #{$margin-x-x-s}px;
+}
+
+.section-meta {
+  font-size: #{$font-size-s-m}px;
+  color: var(--color-text);
+  opacity: 0.7;
+  margin-right: #{$margin-x-x-s}px;
+}
+
+.section-note {
+  font-size: #{$font-size-s-m}px;
+  opacity: 0.7;
+  padding: #{$padding-x-x-s}px 0;
+}
+
+.throttle-badge {
+  font-size: #{$font-size-s-m}px;
+  color: var(--color-white);
+  background: #{$color-error};
+  border-radius: 2px;
+  padding: 1px 6px;
+  margin-right: #{$margin-x-x-s}px;
+}
+
+.zone-list {
+  max-height: 132px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+}
+
+.zone-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px #{$padding-x-x-s}px;
+  font-size: #{$font-size-s-m}px;
+  cursor: pointer;
+}
+
+.zone-row:hover {
+  background: var(--color-bg-container-darker);
+}
+
+.zone-row-active {
+  background: var(--color-bg-container-darker);
+  color: var(--color-primary);
+}
+
+.zone-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.cooler-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: #{$font-size-s-m}px;
+  padding: #{$padding-x-x-s}px 0;
+}
+
+.cooler-item {
+  margin-right: #{$margin-x-s}px;
+  opacity: 0.8;
+}
+
+.value-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: #{$margin-x-x-s}px;
+}
+
+.value-item {
+  display: flex;
+  flex-direction: column;
+  font-size: #{$font-size-s-m}px;
+}
+
+.value-label {
+  opacity: 0.7;
+}
+
+.value-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.change-list {
+  font-size: #{$font-size-s-m}px;
+  padding: #{$padding-x-x-s}px 0;
+}
+
+.change-row {
+  display: flex;
+  padding: 1px 0;
+}
+
+.change-time {
+  opacity: 0.7;
+  margin-right: #{$margin-x-s}px;
+  font-variant-numeric: tabular-nums;
+}
+
+.zone-toggle {
+  padding: 2px #{$padding-x-x-s}px;
+  font-size: #{$font-size-s-m}px;
+  color: var(--color-primary);
+  cursor: pointer;
+}
