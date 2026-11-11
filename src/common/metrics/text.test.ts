@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFixture } from './__fixtures__/load'
-import { readField } from './text'
+import { parseKeyedLines, readField } from './text'
 
 describe('readField', () => {
   it.each([
@@ -32,5 +32,33 @@ describe('readField', () => {
 
   it('splits on the last colon, as the app always has', () => {
     expect(readField('cb', 'cb: was sent: +17s469ms')).toBe('+17s469ms')
+  })
+})
+describe('parseKeyedLines', () => {
+  it('reads one value per line', () => {
+    expect(parseKeyedLines('voltage_now|4301000\ncurrent_now|-1250000\n')).toEqual(
+      { voltage_now: '4301000', current_now: '-1250000' },
+    )
+  })
+
+  it('keeps an empty value readable rather than dropping the field', () => {
+    expect(parseKeyedLines('temp|\nstatus|Charging\n')).toEqual({
+      temp: '',
+      status: 'Charging',
+    })
+  })
+
+  it('ignores lines that are not a key and a value', () => {
+    expect(parseKeyedLines('garbage\nstatus|Charging\n')).toEqual({
+      status: 'Charging',
+    })
+  })
+
+  it('keeps the last value when a field is printed twice', () => {
+    expect(parseKeyedLines('a|1\na|2\n')).toEqual({ a: '2' })
+  })
+
+  it('trims the padding around keys and values', () => {
+    expect(parseKeyedLines('  a  |  1  \n')).toEqual({ a: '1' })
   })
 })

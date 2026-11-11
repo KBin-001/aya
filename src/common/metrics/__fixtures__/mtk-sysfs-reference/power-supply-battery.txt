@@ -1,0 +1,5 @@
+voltage_now|4301000
+current_now|-1250000
+temp|292
+status|Charging
+capacity|62

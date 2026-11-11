@@ -1,3 +1,5 @@
+import { IMetricsSnapshot } from './metrics/types'
+
 export interface IDevice {
   id: string
   name: string
@@ -69,6 +71,8 @@ export enum TransferType {
 }
 
 export type IpcGetFps = (deviceId: string, pkg: string) => Promise<number>
+/** One call per tick returns everything the performance panel shows. */
+export type IpcGetMetrics = (deviceId: string) => Promise<IMetricsSnapshot>
 export type IpcGetDevices = () => Promise<IDevice[]>
 export type IpcSetScreencastAlwaysOnTop = (alwaysOnTop: boolean) => void
 export type IpcListForwards = (

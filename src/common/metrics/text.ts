@@ -1,4 +1,6 @@
 import trim from 'licia/trim'
+import each from 'licia/each'
+import types from 'licia/types'
 import find from 'licia/find'
 import startWith from 'licia/startWith'
 
@@ -15,4 +17,32 @@ export function readField(key: string, text: string): string {
   const line = find(text.split('\n'), (line) => startWith(trim(line), key))
 
   return line ? trim(line.replace(/.*:/, '')) : ''
+}
+
+/**
+ * Read `key|value` lines into a record.
+ *
+ * The collector prints one such line per sysfs file it reads, because a batch
+ * of `cat` calls gives no boundaries between the files. An empty value is kept
+ * as '' so the caller can tell "the file answered nothing" from "the file does
+ * not exist", which are different failures.
+ */
+export function parseKeyedLines(text: string): types.PlainObj<string> {
+  const result: types.PlainObj<string> = {}
+
+  each(text.split('\n'), (line) => {
+    const separator = line.indexOf('|')
+    if (separator === -1) {
+      return
+    }
+
+    const key = trim(line.slice(0, separator))
+    if (!key) {
+      return
+    }
+
+    result[key] = trim(line.slice(separator + 1))
+  })
+
+  return result
 }

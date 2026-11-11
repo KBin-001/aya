@@ -27,6 +27,7 @@ import * as scrcpy from './adb/scrcpy'
 import * as packageAdb from './adb/package'
 import * as file from './adb/file'
 import * as fps from './adb/fps'
+import * as metrics from './adb/metrics'
 import * as webview from './adb/webview'
 import * as port from './adb/port'
 import { getCpuLoads, getCpus, getCpuTemperature } from './adb/cpu'
@@ -886,6 +887,7 @@ export async function init() {
   }
   function onDeviceChange() {
     logger.info('device change')
+    metrics.forgetDevices()
     setTimeout(() => window.sendAll('changeDevice'), 2000)
   }
   track()
@@ -898,6 +900,10 @@ export async function init() {
   packageAdb.init(client)
   file.init(client)
   fps.init()
+  // One round trip per tick: the collector batches every metric read.
+  handleEvent('getMetrics', (deviceId: string) =>
+    metrics.collectMetrics(deviceId, (commands) => shell(deviceId, commands)),
+  )
   webview.init()
   port.init(client)
 
