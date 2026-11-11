@@ -198,4 +198,20 @@
   "unreadable": "读取失败",
   "noData": "暂无数据",
   "zonesShown": "已显示"
+,
+  "ddr": "DDR",
+  "ddrFrequency": "DDR 频率",
+  "frequencyChanges": "频率变化",
+  "display": "显示",
+  "brightness": "背光亮度",
+  "refreshRate": "刷新率",
+  "screenOn": "屏幕点亮",
+  "screenOff": "屏幕熄灭",
+  "screenChanges": "亮灭变化",
+  "refreshRateChanges": "刷新率变化",
+  "gpu": "GPU",
+  "gpuFrequency": "GPU 频率",
+  "load": "负载",
+  "governor": "调频策略",
+  "throttled": "已压频"
 }

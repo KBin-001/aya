@@ -71,22 +71,24 @@ export default function ThermalSection(props: IThermalSectionProps) {
 
       {!thermal ? null : hasZones ? (
         <div className={Style.zoneList}>
-          {(expanded ? zones : zones.slice(0, COLLAPSED_ZONE_ROWS)).map((zone, index) => (
-            <div
-              key={`${zone.name}-${index}`}
-              className={
-                index === zones.indexOf(activeZone)
-                  ? `${Style.zoneRow} ${Style.zoneRowActive}`
-                  : Style.zoneRow
-              }
-              onClick={() => setSelectedIndex(index)}
-            >
-              <span className={Style.zoneName}>{zone.name}</span>
-              <span className={Style.zoneValue}>
-                {zone.temperatureC.toFixed(1)}°C
-              </span>
-            </div>
-          ))}
+          {(expanded ? zones : zones.slice(0, COLLAPSED_ZONE_ROWS)).map(
+            (zone, index) => (
+              <div
+                key={`${zone.name}-${index}`}
+                className={
+                  index === zones.indexOf(activeZone)
+                    ? `${Style.zoneRow} ${Style.zoneRowActive}`
+                    : Style.zoneRow
+                }
+                onClick={() => setSelectedIndex(index)}
+              >
+                <span className={Style.zoneName}>{zone.name}</span>
+                <span className={Style.zoneValue}>
+                  {zone.temperatureC.toFixed(1)}°C
+                </span>
+              </div>
+            ),
+          )}
           {zones.length > COLLAPSED_ZONE_ROWS ? (
             <div
               className={Style.zoneToggle}
@@ -100,7 +102,9 @@ export default function ThermalSection(props: IThermalSectionProps) {
         </div>
       ) : (
         <div className={Style.sectionNote} title={thermal.reason}>
-          {thermal.status === 'unsupported' ? t('notSupported') : t('unreadable')}
+          {thermal.status === 'unsupported'
+            ? t('notSupported')
+            : t('unreadable')}
         </div>
       )}
 

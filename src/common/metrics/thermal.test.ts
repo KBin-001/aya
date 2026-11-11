@@ -45,7 +45,7 @@ describe('parseThermalZones', () => {
 describe('parseThermalService', () => {
   it('reads the thermal status, the cooling devices and the HAL zones', () => {
     const result = parseThermalService(
-      readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt')
+      readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt'),
     )
     if (!result.ok) throw new Error('fixture should parse')
 
@@ -63,7 +63,7 @@ describe('parseThermalService', () => {
     // The dump carries CPU=50.667 in "Cached temperatures" and CPU=31.07 in
     // "Current temperatures from HAL". The live block is the truth.
     const result = parseThermalService(
-      readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt')
+      readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt'),
     )
     if (!result.ok) throw new Error('fixture should parse')
 
@@ -72,7 +72,9 @@ describe('parseThermalService', () => {
   })
 
   it('reports a readable error when the service printed nothing usable', () => {
-    const result = parseThermalService('ThermalEventListeners:\n\tcallbacks: 1\n')
+    const result = parseThermalService(
+      'ThermalEventListeners:\n\tcallbacks: 1\n',
+    )
 
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toContain('thermal')
@@ -85,7 +87,7 @@ describe('isThrottling', () => {
       isThrottling(0, [
         { name: 'charger-cooler', value: 0 },
         { name: 'lcd-backlight', value: 0 },
-      ])
+      ]),
     ).toBe(false)
   })
 
@@ -95,7 +97,7 @@ describe('isThrottling', () => {
 
   it('is true when a cooling device has been pulled', () => {
     expect(isThrottling(0, [{ name: 'devfreq-13000000.mali', value: 3 }])).toBe(
-      true
+      true,
     )
   })
 
@@ -112,8 +114,8 @@ describe('parseCpuTemperature', () => {
     // digits as the app has always done for the CPU card.
     expect(
       parseCpuTemperature(
-        readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt')
-      )
+        readFixture('mtk-tb8781p4', 'dumpsys-thermalservice.txt'),
+      ),
     ).toEqual({ ok: true, value: 31.1 })
   })
 
@@ -121,9 +123,9 @@ describe('parseCpuTemperature', () => {
     const record = (value: string) =>
       `\tTemperature{mValue=${value}, mType=0, mName=CPU, mStatus=0}`
 
-    expect(parseCpuTemperature([record('50'), record('70')].join('\n'))).toEqual(
-      { ok: true, value: 70 }
-    )
+    expect(
+      parseCpuTemperature([record('50'), record('70')].join('\n')),
+    ).toEqual({ ok: true, value: 70 })
   })
 
   it('averages every zone whose name starts with CPU', () => {
@@ -136,16 +138,16 @@ describe('parseCpuTemperature', () => {
           record('CPU_BIG', '40'),
           record('CPU_LITTLE', '60'),
           record('GPU', '99'),
-        ].join('\n')
-      )
+        ].join('\n'),
+      ),
     ).toEqual({ ok: true, value: 50 })
   })
 
   it('rounds to three significant digits, not three decimals', () => {
     expect(
       parseCpuTemperature(
-        '\tTemperature{mValue=100.5, mType=0, mName=CPU, mStatus=0}'
-      )
+        '\tTemperature{mValue=100.5, mType=0, mName=CPU, mStatus=0}',
+      ),
     ).toEqual({ ok: true, value: 101 })
   })
 
@@ -160,7 +162,7 @@ describe('parseCpuTemperature', () => {
 
   it('reports a readable error when the device exposes no CPU zone', () => {
     const result = parseCpuTemperature(
-      '\tTemperature{mValue=55, mType=1, mName=GPU, mStatus=0}'
+      '\tTemperature{mValue=55, mType=1, mName=GPU, mStatus=0}',
     )
 
     expect(result.ok).toBe(false)

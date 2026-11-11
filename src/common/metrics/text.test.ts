@@ -36,9 +36,9 @@ describe('readField', () => {
 })
 describe('parseKeyedLines', () => {
   it('reads one value per line', () => {
-    expect(parseKeyedLines('voltage_now|4301000\ncurrent_now|-1250000\n')).toEqual(
-      { voltage_now: '4301000', current_now: '-1250000' },
-    )
+    expect(
+      parseKeyedLines('voltage_now|4301000\ncurrent_now|-1250000\n'),
+    ).toEqual({ voltage_now: '4301000', current_now: '-1250000' })
   })
 
   it('keeps an empty value readable rather than dropping the field', () => {

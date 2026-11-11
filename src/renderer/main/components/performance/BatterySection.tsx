@@ -91,7 +91,11 @@ export default function BatterySection(props: IBatterySectionProps) {
   const isDark = store.theme === 'dark'
   const changes = changesRef.current
 
-  if (battery && battery.status !== 'supported' && battery.status !== 'pending') {
+  if (
+    battery &&
+    battery.status !== 'supported' &&
+    battery.status !== 'pending'
+  ) {
     return (
       <div className={Style.section}>
         <div className={Style.sectionHeader}>
@@ -108,7 +112,9 @@ export default function BatterySection(props: IBatterySectionProps) {
     <div className={Style.section}>
       <div className={Style.sectionHeader}>
         <span className={Style.sectionTitle}>{t('batteryAndPower')}</span>
-        <span className={Style.sectionMeta}>{stateLabel(battery ? battery.state : null)}</span>
+        <span className={Style.sectionMeta}>
+          {stateLabel(battery ? battery.state : null)}
+        </span>
       </div>
 
       <div className={Style.valueGrid}>
@@ -161,10 +167,7 @@ export default function BatterySection(props: IBatterySectionProps) {
         <div className={Style.changeList}>
           <span className={Style.sectionMeta}>{t('stateChanges')}</span>
           {changes.map((change) => (
-            <div
-              key={`${change.at}-${change.to}`}
-              className={Style.changeRow}
-            >
+            <div key={`${change.at}-${change.to}`} className={Style.changeRow}>
               <span className={Style.changeTime}>
                 {dateFormat(new Date(change.at), 'HH:MM:ss')}
               </span>

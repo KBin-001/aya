@@ -23,6 +23,23 @@ function fakeShell(outputs: Record<string, string>) {
         const core = /cpu(\d+)/.exec(command)?.[1]
         return outputs['freq:' + core] ?? ''
       }
+      if (command.includes('ls /sys/class/devfreq')) {
+        return outputs['probe:devfreq'] ?? ''
+      }
+      if (command.includes('max_brightness')) {
+        return outputs['probe:backlight-max'] ?? ''
+      }
+      if (command.includes('/sys/class/devfreq/')) {
+        return command.includes('mali') || command.includes('gpu')
+          ? (outputs.gpu ?? '')
+          : (outputs.ddr ?? '')
+      }
+      if (command.includes('dumpsys display')) {
+        return outputs.display ?? ''
+      }
+      if (command.includes('screen_brightness')) {
+        return outputs.brightness ?? ''
+      }
       if (command.includes('thermal_zone*/type')) {
         return outputs['thermal:types'] ?? ''
       }
@@ -70,6 +87,11 @@ const batteryDump = readFixture('mtk-tb8781p4', 'dumpsys-battery.txt')
 const zoneTypes = readFixture('mtk-sysfs-reference', 'thermal-zones-types.txt')
 const zoneTemps = readFixture('mtk-sysfs-reference', 'thermal-zones-temps.txt')
 const powerNode = readFixture('mtk-sysfs-reference', 'power-supply-battery.txt')
+const ddrNode = readFixture('mtk-sysfs-reference', 'devfreq-ddr.txt')
+const gpuNode = readFixture('mtk-sysfs-reference', 'devfreq-gpu.txt')
+const displayDump =
+  readFixture('mtk-tb8781p4', 'dumpsys-display-state.txt') +
+  readFixture('mtk-tb8781p4', 'dumpsys-display-device-info.txt')
 
 // The upstream parser takes the second-to-last token and splits it on ':' to
 // read "<pid>:<package>". The parsing is unchanged; only the command that feeds
@@ -78,7 +100,8 @@ const topLine = '  top-activity 4242:com.example.player'
 
 function healthyOutputs(): Record<string, string> {
   const outputs: Record<string, string> = {
-    'probe:thermal': 'cooling_device0 cooling_device1 thermal_zone0 thermal_zone1',
+    'probe:thermal':
+      'cooling_device0 cooling_device1 thermal_zone0 thermal_zone1',
     'probe:power': 'capacity current_now status temp voltage_now',
     'stat:a': stat,
     'stat:b': stat,
@@ -91,6 +114,12 @@ function healthyOutputs(): Record<string, string> {
     uptime: '12345.67 98765.43',
     top: topLine,
     fps: 'flips=9241',
+    'probe:devfreq': 'mtk-dvfsrc-devfreq\n13000000.mali',
+    'probe:backlight-max': '',
+    ddr: ddrNode,
+    gpu: gpuNode,
+    display: displayDump,
+    brightness: readFixture('mtk-tb8781p4', 'settings-brightness.txt'),
   }
   for (let i = 0; i < 8; i++) {
     outputs['freq:' + i] = '1800000'
@@ -104,23 +133,114 @@ describe('collectMetrics', () => {
     const cache = new Map()
 
     await collectMetrics('device', shell.run, cache)
-    expect(shell.calls).toHaveLength(2) // probe + tick
+    expect(shell.calls).toHaveLength(3) // two probe round trips + the tick
 
     await collectMetrics('device', shell.run, cache)
     await collectMetrics('device', shell.run, cache)
 
-    expect(shell.calls).toHaveLength(4) // exactly one more per tick
+    expect(shell.calls).toHaveLength(5) // exactly one more per tick
   })
 
-  it('reports the five domains, with the unimplemented ones pending', async () => {
+  it('reports every domain with the source that answered', async () => {
     const shell = fakeShell(healthyOutputs())
     const snapshot = await collectMetrics('device', shell.run, new Map())
 
     expect(snapshot.thermal.status).toBe('supported')
     expect(snapshot.battery.status).toBe('supported')
-    expect(snapshot.ddr.status).toBe('pending')
-    expect(snapshot.display.status).toBe('pending')
-    expect(snapshot.gpu.status).toBe('pending')
+    expect(snapshot.ddr).toMatchObject({
+      status: 'supported',
+      source: 'mtk-dvfsrc-devfreq',
+      frequencyMhz: 4266,
+      availableMhz: [1066, 1600, 2133, 2736, 3600, 4266],
+    })
+    expect(snapshot.gpu).toMatchObject({
+      status: 'supported',
+      source: '13000000.mali',
+      frequencyMhz: 390,
+      loadPct: 37,
+      governor: 'simple_ondemand',
+    })
+    expect(snapshot.display).toMatchObject({
+      status: 'supported',
+      refreshRateHz: 60,
+      screenOn: false,
+      brightnessRaw: 103,
+    })
+  })
+
+  it('says a device exposes no DDR node rather than reporting 0 MHz', async () => {
+    const outputs = healthyOutputs()
+    outputs['probe:devfreq'] = '13000000.mali'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.ddr.status).toBe('unsupported')
+    expect(snapshot.ddr.reason).toContain('no DDR')
+    expect(snapshot.ddr.frequencyMhz).toBeNull()
+  })
+
+  it('says a device exposes no GPU node rather than reporting 0 MHz', async () => {
+    const outputs = healthyOutputs()
+    outputs['probe:devfreq'] = 'mtk-dvfsrc-devfreq'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.gpu.status).toBe('unsupported')
+    expect(snapshot.gpu.reason).toContain('no GPU')
+    expect(snapshot.gpu.frequencyMhz).toBeNull()
+  })
+
+  it('does not read a node it proved unreadable at probe time', async () => {
+    // A node that refuses reads would otherwise cost a command every tick.
+    const outputs = healthyOutputs()
+    outputs.ddr = ''
+    outputs.gpu = ''
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+    const tickCommands = shell.calls[2]
+
+    // The node is there, it just refuses: an error the user can act on, not a
+    // device without DDR reporting.
+    expect(snapshot.ddr.status).toBe('error')
+    expect(snapshot.ddr.reason).toContain('not readable without root')
+    expect(tickCommands.some((command) => command.includes('devfreq'))).toBe(
+      false,
+    )
+  })
+
+  it('marks the GPU throttled only after it has been seen at a higher step', async () => {
+    const outputs = healthyOutputs()
+    const shell = fakeShell(outputs)
+    const cache = new Map()
+
+    const first = await collectMetrics('device', shell.run, cache)
+    expect(first.gpu.throttled).toBe(false)
+
+    // The GPU drops from 1000 MHz to 390 MHz: that is being held back.
+    outputs.gpu = outputs.gpu.replace(
+      'cur_freq|390000000',
+      'cur_freq|1000000000',
+    )
+    const atTop = await collectMetrics('device', shell.run, cache)
+    expect(atTop.gpu.throttled).toBe(false)
+
+    outputs.gpu = gpuNode
+    const dropped = await collectMetrics('device', shell.run, cache)
+    expect(dropped.gpu.throttled).toBe(true)
+  })
+
+  it('turns the brightness setting into a share when the range is known', async () => {
+    const outputs = healthyOutputs()
+    outputs['probe:backlight-max'] = '255'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.display.brightnessPct).toBe(40.4)
+    expect(snapshot.display.brightnessMax).toBe(255)
   })
 
   it('reads the cpu, memory, uptime, fps and top package it always has', async () => {
@@ -277,8 +397,37 @@ describe('collectMetrics', () => {
     forgetDevices() // drops the module-level state production uses
     await collectMetrics('device', shell.run, new Map())
 
-    // 2 (probe+tick) + 1 (tick) + 2 (probe+tick after the reset)
-    expect(shell.calls).toHaveLength(5)
+    // 3 (two probes + tick) + 1 (tick) + 3 (probe again after the reset)
+    expect(shell.calls).toHaveLength(7)
+  })
+
+  it('ignores a brightness range that several backlight nodes printed', async () => {
+    // "255 255" is two panels' maxima, not a range: the percentage stays out
+    // and the raw level is kept.
+    const outputs = healthyOutputs()
+    outputs['probe:backlight-max'] = '255 255'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.display.brightnessMax).toBeNull()
+    expect(snapshot.display.brightnessPct).toBeNull()
+    expect(snapshot.display.brightnessRaw).toBe(103)
+  })
+
+  it('re-probes when a devfreq node stops answering', async () => {
+    const outputs = healthyOutputs()
+    const cache = new Map()
+    const shell = fakeShell(outputs)
+
+    await collectMetrics('device', shell.run, cache)
+    expect(cache.size).toBe(1)
+
+    outputs.ddr = ''
+    const degraded = await collectMetrics('device', shell.run, cache)
+
+    expect(degraded.ddr.status).toBe('error')
+    expect(cache.size).toBe(0)
   })
 
   it('reports no uptime rather than NaN when /proc/uptime is unreadable', async () => {

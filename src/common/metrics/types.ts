@@ -39,11 +39,7 @@ export interface IThermalReading extends IReading {
 }
 
 export type IBatteryState =
-  | 'charging'
-  | 'discharging'
-  | 'full'
-  | 'not-charging'
-  | 'unknown'
+  'charging' | 'discharging' | 'full' | 'not-charging' | 'unknown'
 
 export interface IBatteryReading extends IReading {
   levelPct: number | null
@@ -62,7 +58,11 @@ export interface IDdrReading extends IReading {
 }
 
 export interface IDisplayReading extends IReading {
+  /** Brightness as a share of what the panel can do; null when the range is unknown. */
   brightnessPct: number | null
+  /** Brightness as the platform reports it, for when the range is unknown. */
+  brightnessRaw: number | null
+  brightnessMax: number | null
   refreshRateHz: number | null
   screenOn: boolean | null
 }

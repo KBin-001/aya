@@ -7,7 +7,12 @@ import trim from 'licia/trim'
 import {
   attachCpuSpeeds,
   cpuLoadBetween,
+  isGpuThrottled,
   isThrottling,
+  parseBrightness,
+  parseDevfreqReadings,
+  parseDisplayInfo,
+  selectDevfreqNode,
   parseCpuFrequencies,
   parseCpuStat,
   parseCpuTemperature,
@@ -18,6 +23,7 @@ import {
   parseThermalZones,
   IBatteryReading,
   ICpuSnapshot,
+  IDevfreqReading,
   IDdrReading,
   IDisplayReading,
   IGpuReading,
@@ -40,8 +46,15 @@ export type RunShell = (commands: string[]) => Promise<string[]>
  * temperatures line up. One `cat` per zone would spawn two processes per zone
  * - around three seconds on a device with thirty of them.
  */
-const THERMAL_ZONE_TYPES = 'cat /sys/class/thermal/thermal_zone*/type 2>/dev/null'
-const THERMAL_ZONE_TEMPS = 'cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
+const THERMAL_ZONE_TYPES =
+  'cat /sys/class/thermal/thermal_zone*/type 2>/dev/null'
+const THERMAL_ZONE_TEMPS =
+  'cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
+
+/** One line per devfreq field, for the same reason as the power supply scan. */
+function devfreqScan(node: string): string {
+  return `for f in cur_freq available_frequencies governor load; do echo "$f|$(cat /sys/class/devfreq/${node}/$f 2>/dev/null)"; done`
+}
 
 /** One field per line, so the parser keeps the boundaries between files. */
 const POWER_SUPPLY_SCAN =
@@ -61,6 +74,15 @@ interface IDeviceProbe {
   powerSupplyBattery: boolean
   /** The node answered a read, so the battery service dump is not needed. */
   powerSupplyReadable: boolean
+  /** devfreq node carrying the DDR clock, when the device has one. */
+  ddrNode: string | null
+  /** devfreq node carrying the GPU clock, when the device has one. */
+  gpuNode: string | null
+  /** The DDR / GPU nodes answered a read. Unreadable nodes cost a tick each. */
+  ddrReadable: boolean
+  gpuReadable: boolean
+  /** Range of the backlight scale, when a backlight node publishes one. */
+  brightnessMax: number | null
 }
 
 interface IRead {
@@ -73,36 +95,16 @@ const probes = new Map<string, IDeviceProbe>()
 
 const PENDING_REASON = 'not sampled yet'
 
-function pendingDdr(): IDdrReading {
-  return {
-    source: '',
-    status: 'pending',
-    reason: PENDING_REASON,
-    frequencyMhz: null,
-    availableMhz: [],
-  }
-}
-
 function pendingDisplay(): IDisplayReading {
   return {
     source: '',
     status: 'pending',
     reason: PENDING_REASON,
     brightnessPct: null,
+    brightnessRaw: null,
+    brightnessMax: null,
     refreshRateHz: null,
     screenOn: null,
-  }
-}
-
-function pendingGpu(): IGpuReading {
-  return {
-    source: '',
-    status: 'pending',
-    reason: PENDING_REASON,
-    frequencyMhz: null,
-    loadPct: null,
-    governor: null,
-    throttled: false,
   }
 }
 
@@ -129,19 +131,55 @@ function emptyBattery(
  * paths that exist. A device that gains or loses a node needs a reconnect,
  * which is exactly when the cache is dropped.
  */
-async function probeDevice(
-  runShell: RunShell,
-): Promise<IDeviceProbe> {
-  const [stat, thermalDir, thermalTemps, powerSupply, powerSupplyFields] =
-    await runShell([
-      'cat /proc/stat',
-      'ls /sys/class/thermal 2>/dev/null',
-      THERMAL_ZONE_TEMPS,
-      'ls /sys/class/power_supply/battery 2>/dev/null',
-      POWER_SUPPLY_SCAN,
-    ])
+async function probeDevice(runShell: RunShell): Promise<IDeviceProbe> {
+  const [
+    stat,
+    thermalDir,
+    thermalTemps,
+    powerSupply,
+    powerSupplyFields,
+    devfreqNodes,
+    backlightMax,
+  ] = await runShell([
+    'cat /proc/stat',
+    'ls /sys/class/thermal 2>/dev/null',
+    THERMAL_ZONE_TEMPS,
+    'ls /sys/class/power_supply/battery 2>/dev/null',
+    POWER_SUPPLY_SCAN,
+    'ls /sys/class/devfreq 2>/dev/null',
+    'cat /sys/class/backlight/*/max_brightness 2>/dev/null',
+  ])
 
   const cpus = parseCpuStat(stat)
+  const nodeNames = (devfreqNodes || '')
+    .split('\n')
+    .map((node) => trim(node))
+    .filter(Boolean)
+  const ddrNode = selectDevfreqNode(nodeNames, 'ddr')
+  const gpuNode = selectDevfreqNode(nodeNames, 'gpu')
+
+  // A node that exists but refuses reads would cost a useless command on every
+  // tick, so the probe settles readability once, here.
+  const nodesToVerify = [ddrNode, gpuNode].filter(
+    (node): node is string => node !== null,
+  )
+  const verifications = nodesToVerify.length
+    ? await runShell(nodesToVerify.map((node) => devfreqScan(node)))
+    : []
+  const verified: Record<string, boolean> = {}
+  nodesToVerify.forEach((node, index) => {
+    verified[node] = parseDevfreqReadings(verifications[index] || '').ok
+  })
+  const ddrReadable = ddrNode ? verified[ddrNode] === true : false
+  const gpuReadable = gpuNode ? verified[gpuNode] === true : false
+  // Several backlight nodes would print several maxima on one line, which is
+  // not a range; only a single number is usable.
+  const backlightMaxText = trim(backlightMax || '')
+  const backlightMaxValue = toNum(backlightMaxText)
+  const brightnessMax =
+    /^\d+$/.test(backlightMaxText) && Number.isFinite(backlightMaxValue)
+      ? backlightMaxValue
+      : null
 
   return {
     cores: cpus.ok ? cpus.value.length : 0,
@@ -149,6 +187,11 @@ async function probeDevice(
     thermalZonesReadable: /^-?\d+/.test(trim(thermalTemps || '')),
     powerSupplyBattery: !isEmpty(trim(powerSupply || '')),
     powerSupplyReadable: parsePowerSupplyBattery(powerSupplyFields || '').ok,
+    ddrNode,
+    gpuNode,
+    ddrReadable,
+    gpuReadable,
+    brightnessMax,
   }
 }
 
@@ -188,13 +231,37 @@ function buildReads(probe: IDeviceProbe): IRead[] {
     reads.push({ key: 'battery:dumpsys', command: 'dumpsys battery' })
   }
 
+  if (probe.ddrReadable && probe.ddrNode) {
+    reads.push({ key: 'ddr', command: devfreqScan(probe.ddrNode) })
+  }
+  if (probe.gpuReadable && probe.gpuNode) {
+    reads.push({ key: 'gpu', command: devfreqScan(probe.gpuNode) })
+  }
+
+  // The panel state line and the device info line come back together, grepped
+  // out of a dump that runs to hundreds of kilobytes.
+  reads.push({
+    key: 'display',
+    command: 'dumpsys display | grep -m2 -E "DisplayDeviceInfo|Display State="',
+  })
+  reads.push({
+    key: 'brightness',
+    command: 'settings get system screen_brightness',
+  })
+
   reads.push({ key: 'memory', command: 'cat /proc/meminfo' })
   reads.push({ key: 'uptime', command: 'cat /proc/uptime' })
 
   // Both of these dumps run to megabytes. Only the line the parser reads is
   // requested, which is the same line it would have found in the full dump.
-  reads.push({ key: 'top', command: 'dumpsys activity | grep -m1 top-activity' })
-  reads.push({ key: 'fps', command: 'dumpsys SurfaceFlinger | grep -m1 flips=' })
+  reads.push({
+    key: 'top',
+    command: 'dumpsys activity | grep -m1 top-activity',
+  })
+  reads.push({
+    key: 'fps',
+    command: 'dumpsys SurfaceFlinger | grep -m1 flips=',
+  })
 
   return reads
 }
@@ -240,9 +307,7 @@ function readCpu(
   return {
     source: 'proc_stat',
     status: 'supported',
-    cpus: speeds.ok
-      ? attachCpuSpeeds(first.value, speeds.value)
-      : first.value,
+    cpus: speeds.ok ? attachCpuSpeeds(first.value, speeds.value) : first.value,
     loads,
     temperatureC,
   }
@@ -327,6 +392,152 @@ function readThermal(
   }
 }
 
+type DevfreqOutcome =
+  | { status: 'supported'; reading: IDevfreqReading }
+  | { status: 'error' | 'unsupported'; source: string; reason: string }
+
+/**
+ * Read one devfreq-backed domain.
+ *
+ * DDR and GPU differ only in their node and their wording, so they share this:
+ * the three ways a domain can fail (no node, a node that refuses reads, a node
+ * that stopped answering) must read the same in both sections.
+ */
+function readDevfreqSource(
+  node: string | null,
+  readable: boolean,
+  nodeText: string,
+  domain: 'DDR' | 'GPU',
+): DevfreqOutcome {
+  if (node && readable) {
+    const reading = parseDevfreqReadings(nodeText)
+    if (reading.ok) {
+      return { status: 'supported', reading: reading.value }
+    }
+
+    return {
+      status: 'error',
+      source: node,
+      reason: `the devfreq node ${node} stopped reporting a frequency`,
+    }
+  }
+
+  if (node) {
+    return {
+      status: 'error',
+      source: node,
+      reason: `the devfreq node ${node} is not readable without root`,
+    }
+  }
+
+  return {
+    status: 'unsupported',
+    source: '',
+    reason: `this device exposes no ${domain} frequency node the shell may read`,
+  }
+}
+
+function readDdr(
+  outputs: Record<string, string>,
+  probe: IDeviceProbe,
+): IDdrReading {
+  const outcome = readDevfreqSource(
+    probe.ddrNode,
+    probe.ddrReadable,
+    outputs.ddr || '',
+    'DDR',
+  )
+
+  if (outcome.status !== 'supported') {
+    return {
+      source: outcome.source,
+      status: outcome.status,
+      reason: outcome.reason,
+      frequencyMhz: null,
+      availableMhz: [],
+    }
+  }
+
+  return {
+    source: probe.ddrNode || '',
+    status: 'supported',
+    frequencyMhz: outcome.reading.frequencyMhz,
+    availableMhz: outcome.reading.availableMhz,
+  }
+}
+
+function readGpu(
+  deviceId: string,
+  outputs: Record<string, string>,
+  probe: IDeviceProbe,
+): IGpuReading {
+  const outcome = readDevfreqSource(
+    probe.gpuNode,
+    probe.gpuReadable,
+    outputs.gpu || '',
+    'GPU',
+  )
+
+  if (outcome.status !== 'supported') {
+    return {
+      source: outcome.source,
+      status: outcome.status,
+      reason: outcome.reason,
+      frequencyMhz: null,
+      loadPct: null,
+      governor: null,
+      throttled: false,
+    }
+  }
+
+  const { frequencyMhz, loadPct, governor } = outcome.reading
+  // The top a GPU reaches is the honest reference for "held back": the
+  // frequency table is not always published and some nodes lie in it.
+  const observed = Math.max(maxGpuMhz[deviceId] || 0, frequencyMhz || 0)
+  maxGpuMhz[deviceId] = observed
+
+  return {
+    source: probe.gpuNode || '',
+    status: 'supported',
+    frequencyMhz,
+    loadPct,
+    governor,
+    throttled: isGpuThrottled(frequencyMhz, observed, governor),
+  }
+}
+
+/** Highest GPU frequency each device has been seen running at. */
+const maxGpuMhz: Record<string, number> = {}
+
+function readDisplay(
+  outputs: Record<string, string>,
+  probe: IDeviceProbe,
+): IDisplayReading {
+  const info = parseDisplayInfo(outputs.display || '')
+  const brightness = parseBrightness(
+    outputs.brightness || '',
+    probe.brightnessMax === null ? null : String(probe.brightnessMax),
+  )
+
+  if (!info.ok && !brightness.ok) {
+    return {
+      ...pendingDisplay(),
+      status: 'unsupported',
+      reason: 'dumpsys display and the brightness setting both went unreadable',
+    }
+  }
+
+  return {
+    source: 'dumpsys_display',
+    status: 'supported',
+    brightnessPct: brightness.ok ? brightness.value.brightnessPct : null,
+    brightnessRaw: brightness.ok ? brightness.value.brightnessRaw : null,
+    brightnessMax: brightness.ok ? brightness.value.brightnessMax : null,
+    refreshRateHz: info.ok ? info.value.refreshRateHz : null,
+    screenOn: info.ok ? info.value.screenOn : null,
+  }
+}
+
 function readBattery(
   outputs: Record<string, string>,
   probe: IDeviceProbe,
@@ -349,11 +560,7 @@ function readBattery(
         'power_supply',
         'the battery node and the battery service both went unreadable',
       )
-    : emptyBattery(
-        'unsupported',
-        '',
-        'this device reported no battery state',
-      )
+    : emptyBattery('unsupported', '', 'this device reported no battery state')
 }
 
 function readUptimeMs(outputs: Record<string, string>): number | null {
@@ -452,6 +659,9 @@ export function forgetDevices() {
   Object.keys(lastFlips).forEach((deviceId) => {
     delete lastFlips[deviceId]
   })
+  Object.keys(maxGpuMhz).forEach((deviceId) => {
+    delete maxGpuMhz[deviceId]
+  })
 }
 
 /**
@@ -481,11 +691,17 @@ export async function collectMetrics(
 
   const timestamp = now()
   const battery = readBattery(outputs, probe)
+  const ddr = readDdr(outputs, probe)
+  const gpu = readGpu(deviceId, outputs, probe)
 
   // The probe said the battery node was readable, so the battery service dump
   // was not even requested. If the node then failed, drop the probe: the next
   // tick probes again and brings the fallback command back with it.
-  if (battery.status === 'error' && probe.powerSupplyReadable) {
+  if (
+    (battery.status === 'error' && probe.powerSupplyReadable) ||
+    (ddr.status === 'error' && probe.ddrReadable) ||
+    (gpu.status === 'error' && probe.gpuReadable)
+  ) {
     probeCache.delete(deviceId)
   }
 
@@ -498,8 +714,8 @@ export async function collectMetrics(
     topPackage: readTopPackage(outputs),
     thermal: readThermal(outputs, probe),
     battery,
-    ddr: pendingDdr(),
-    display: pendingDisplay(),
-    gpu: pendingGpu(),
+    ddr,
+    display: readDisplay(outputs, probe),
+    gpu,
   }
 }

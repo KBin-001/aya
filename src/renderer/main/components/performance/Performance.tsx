@@ -27,6 +27,9 @@ import className from 'licia/className'
 import { IMetricsSnapshot } from 'common/metrics'
 import ThermalSection from './ThermalSection'
 import BatterySection from './BatterySection'
+import DdrSection from './DdrSection'
+import DisplaySection from './DisplaySection'
+import GpuSection from './GpuSection'
 
 /** The device is sampled once a second; the charts redraw at their own pace. */
 const SAMPLE_INTERVAL = 1000
@@ -129,13 +132,16 @@ export default observer(function Performance() {
   const batteryLevel =
     battery && battery.levelPct !== null ? `${battery.levelPct}%` : '--'
   const batteryVoltage =
-    battery && battery.voltageV !== null ? `${battery.voltageV.toFixed(2)}V` : '--'
+    battery && battery.voltageV !== null
+      ? `${battery.voltageV.toFixed(2)}V`
+      : '--'
   const batteryTemperature =
     battery && battery.temperatureC !== null
       ? `${battery.temperatureC.toFixed(1)}°C`
       : '--'
   const batteryInfo = `${batteryVoltage} ${batteryTemperature}`
-  const cpuTemperature = cpu && cpu.temperatureC !== null ? `${cpu.temperatureC}°C` : ''
+  const cpuTemperature =
+    cpu && cpu.temperatureC !== null ? `${cpu.temperatureC}°C` : ''
   const memoryPercent =
     metrics && metrics.memory.memTotal
       ? `${Math.round((metrics.memory.memUsed / metrics.memory.memTotal) * 100)}%`
@@ -200,6 +206,9 @@ export default observer(function Performance() {
         />
         <ThermalSection metricsRef={metricsRef} />
         <BatterySection metricsRef={metricsRef} />
+        <DdrSection metricsRef={metricsRef} />
+        <DisplaySection metricsRef={metricsRef} />
+        <GpuSection metricsRef={metricsRef} />
       </div>
     </div>
   )

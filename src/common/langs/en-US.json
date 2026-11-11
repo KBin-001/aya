@@ -198,4 +198,20 @@
   "unreadable": "Could not be read",
   "noData": "No data",
   "zonesShown": "shown"
+,
+  "ddr": "DDR",
+  "ddrFrequency": "DDR frequency",
+  "frequencyChanges": "Frequency changes",
+  "display": "Display",
+  "brightness": "Brightness",
+  "refreshRate": "Refresh rate",
+  "screenOn": "Screen on",
+  "screenOff": "Screen off",
+  "screenChanges": "Screen changes",
+  "refreshRateChanges": "Refresh rate changes",
+  "gpu": "GPU",
+  "gpuFrequency": "GPU frequency",
+  "load": "Load",
+  "governor": "Governor",
+  "throttled": "Throttled"
 }
