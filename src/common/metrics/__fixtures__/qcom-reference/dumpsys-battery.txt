@@ -1,0 +1,16 @@
+Current Battery Service state:
+  AC powered: true
+  USB powered: false
+  Wireless powered: false
+  status: 2
+  health: 2
+  present: true
+  level: 62
+  scale: 100
+  voltage: 3901
+  current now: -412000
+  Charge counter: 2610000
+  temperature: 305
+  technology: Li-ion
+  Charging state: 1
+  Capacity level: 3

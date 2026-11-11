@@ -11,7 +11,6 @@ import types from 'licia/types'
 import filter from 'licia/filter'
 import isStrBlank from 'licia/isStrBlank'
 import trim from 'licia/trim'
-import startWith from 'licia/startWith'
 import toNum from 'licia/toNum'
 import contain from 'licia/contain'
 import * as window from 'share/main/lib/window'
@@ -31,6 +30,7 @@ import * as fps from './adb/fps'
 import * as webview from './adb/webview'
 import * as port from './adb/port'
 import { getCpuLoads, getCpus, getCpuTemperature } from './adb/cpu'
+import { parseBattery, parseMemInfo, readField } from 'common/metrics'
 import log from 'share/common/log'
 import {
   IpcConnectDevice,
@@ -230,10 +230,18 @@ async function getUptime(deviceId: string) {
 async function getBattery(deviceId: string) {
   const result = await shell(deviceId, 'dumpsys battery')
 
+  const battery = parseBattery(result)
+  if (!battery.ok) {
+    // Unreadable battery state has always surfaced as zeroes here. The parser
+    // keeps the reason; reporting it needs the per-domain status that the
+    // metrics snapshot introduces.
+    return { batteryLevel: 0, batteryTemperature: 0, batteryVoltage: 0 }
+  }
+
   return {
-    batteryLevel: toNum(getPropValue('level', result)),
-    batteryTemperature: toNum(getPropValue('temperature', result)),
-    batteryVoltage: toNum(getPropValue('voltage', result)),
+    batteryLevel: battery.value.levelPct,
+    batteryTemperature: battery.value.temperatureDeciC,
+    batteryVoltage: battery.value.voltageMv,
   }
 }
 
@@ -255,16 +263,16 @@ const dumpWindowHierarchy: IpcDumpWindowHierarchy = async function (deviceId) {
 async function getScreen(deviceId: string) {
   const [wmSize, wmDensity] = await shell(deviceId, ['wm size', 'wm density'])
 
-  const physicalResolution = getPropValue('Physical size', wmSize)
-  const physicalDensity = getPropValue('Physical density', wmDensity)
+  const physicalResolution = readField('Physical size', wmSize)
+  const physicalDensity = readField('Physical density', wmDensity)
 
   const hasOverrideResolution = contain(wmSize, 'Override')
   const hasOverrideDensity = contain(wmDensity, 'Override')
   const resolution = hasOverrideResolution
-    ? getPropValue('Override size', wmSize)
+    ? readField('Override size', wmSize)
     : physicalResolution
   const density = hasOverrideDensity
-    ? getPropValue('Override density', wmDensity)
+    ? readField('Override density', wmDensity)
     : physicalDensity
 
   return {
@@ -277,23 +285,13 @@ async function getScreen(deviceId: string) {
 
 async function getMemory(deviceId: string) {
   const memInfo = await shell(deviceId, 'cat /proc/meminfo')
-  let memTotal = 0
-  let memFree = 0
 
-  const totalMatch = getPropValue('MemTotal', memInfo)
-  let freeMatch = getPropValue('MemAvailable', memInfo)
-  if (!freeMatch) {
-    freeMatch = getPropValue('MemFree', memInfo)
-  }
-  if (totalMatch && freeMatch) {
-    memTotal = parseInt(totalMatch, 10) * 1024
-    memFree = parseInt(freeMatch, 10) * 1024
+  const memory = parseMemInfo(memInfo)
+  if (!memory.ok) {
+    return { memTotal: 0, memUsed: 0 }
   }
 
-  return {
-    memTotal,
-    memUsed: memTotal - memFree,
-  }
+  return memory.value
 }
 
 async function getStorage(deviceId: string) {
@@ -311,18 +309,6 @@ async function getStorage(deviceId: string) {
     storageTotal,
     storageUsed: storageTotal - storageFree,
   }
-}
-
-function getPropValue(key: string, str: string) {
-  const lines = str.split('\n')
-  for (let i = 0, len = lines.length; i < len; i++) {
-    const line = trim(lines[i])
-    if (startWith(line, key)) {
-      return trim(line.replace(/.*:/, ''))
-    }
-  }
-
-  return ''
 }
 
 const connectDevice: IpcConnectDevice = async function (host, port) {

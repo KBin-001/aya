@@ -1,21 +1,26 @@
 import sleep from 'licia/sleep'
 import each from 'licia/each'
 import map from 'licia/map'
-import trim from 'licia/trim'
-import toNum from 'licia/toNum'
-import startWith from 'licia/startWith'
 import { shell } from './base'
-import types from 'licia/types'
-import average from 'licia/average'
-import identity from 'licia/identity'
-import stripNum from 'licia/stripNum'
+import {
+  attachCpuSpeeds,
+  cpuLoadBetween,
+  parseCpuFrequencies,
+  parseCpuStat,
+  parseCpuTemperature,
+} from 'common/metrics'
 
 const DEFAULT_PERIOD = 50
+
+/** Shell command that reads the current frequency of one core. */
+function cpuFrequencyPath(index: number): string {
+  return `cat /sys/devices/system/cpu/cpu${index}/cpufreq/scaling_cur_freq`
+}
 
 export async function getCpuLoads(
   deviceId: string,
   allCpus: any[],
-  period = 0
+  period = 0,
 ) {
   const cpuLoads: number[] = []
   if (!period) {
@@ -26,109 +31,41 @@ export async function getCpuLoads(
     sleep(period).then(async () => {
       const newAllCpus = await getCpus(deviceId, false)
       each(allCpus, (cpu, idx) => {
-        cpuLoads[idx] = calculateCpuLoad(cpu, newAllCpus[idx])
+        cpuLoads[idx] = cpuLoadBetween(cpu.times, newAllCpus[idx].times)
       })
       resolve(cpuLoads)
     })
   })
 }
 
-function calculateCpuLoad(lastCpu, cpu) {
-  const lastTimes = lastCpu.times
-  const times = cpu.times
-  const lastLoad =
-    lastTimes.user +
-    lastTimes.sys +
-    lastTimes.nice +
-    lastTimes.irq +
-    lastTimes.iowait +
-    lastTimes.softirq
-  const lastTick = lastLoad + lastTimes.idle
-  const load =
-    times.user +
-    times.sys +
-    times.nice +
-    times.irq +
-    times.iowait +
-    times.softirq
-  const tick = load + times.idle
-
-  return (load - lastLoad) / (tick - lastTick)
-}
-
 export async function getCpus(deviceId: string, speed = true) {
-  const result: string = await shell(deviceId, 'cat /proc/stat')
-  const lines = result.split('\n')
-  const cpus: any[] = []
+  const stat: string = await shell(deviceId, 'cat /proc/stat')
 
-  each(lines, (line) => {
-    line = trim(line)
-    if (!startWith(line, 'cpu')) {
-      return
-    }
-
-    const parts = line.split(/\s+/)
-    if (parts[0] === 'cpu') {
-      return
-    }
-
-    const cpu: any = {}
-    cpu.times = {
-      user: toNum(parts[1]),
-      nice: toNum(parts[2]),
-      sys: toNum(parts[3]),
-      idle: toNum(parts[4]),
-      iowait: toNum(parts[5]),
-      irq: toNum(parts[6]),
-      softirq: toNum(parts[7]),
-    }
-
-    cpus.push(cpu)
-  })
-
-  if (speed) {
-    const freqs = await shell(
-      deviceId,
-      map(cpus, (cpu, idx) => {
-        return `cat /sys/devices/system/cpu/cpu${idx}/cpufreq/scaling_cur_freq`
-      })
-    )
-    const speeds: number[] = []
-    each(freqs, (line) => {
-      line = trim(line)
-      if (!line) {
-        return
-      }
-      speeds.push(Math.floor(toNum(line) / 1000))
-    })
-
-    each(cpus, (cpu, idx) => {
-      cpu.speed = speeds[idx]
-    })
+  const cpus = parseCpuStat(stat)
+  if (!cpus.ok) {
+    // A device that reports no cpu rows has always yielded an empty list here.
+    // The parser keeps the reason; surfacing it is the metrics snapshot's job.
+    return []
   }
 
-  return cpus
+  if (!speed) {
+    return cpus.value
+  }
+
+  const freqs: string[] = await shell(
+    deviceId,
+    map(cpus.value, (cpu, idx) => cpuFrequencyPath(idx)),
+  )
+  const speeds = parseCpuFrequencies(freqs)
+
+  return speeds.ok ? attachCpuSpeeds(cpus.value, speeds.value) : cpus.value
 }
 
-const regTemperature =
-  /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=(\w+)/
 export async function getCpuTemperature(deviceId: string) {
-  const thermal = await shell(deviceId, 'dumpsys thermalservice')
-  const lines = thermal.split('\n')
+  const thermal: string = await shell(deviceId, 'dumpsys thermalservice')
 
-  const cpuTemperatures: types.PlainObj<number> = {}
-
-  for (let i = 0, len = lines.length; i < len; i++) {
-    const line = lines[i]
-    const match = line.match(regTemperature)
-    if (match) {
-      const name = match[3]
-      const value = toNum(match[1])
-      if (startWith(name, 'CPU')) {
-        cpuTemperatures[name] = value
-      }
-    }
-  }
-
-  return stripNum(average(...map(cpuTemperatures, identity)), 3)
+  const temperature = parseCpuTemperature(thermal)
+  // The panel reads NaN as "no value" and formats it as is; turning this into
+  // an explicit unsupported status belongs to the thermal ticket.
+  return temperature.ok ? temperature.value : NaN
 }

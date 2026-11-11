@@ -1,0 +1,29 @@
+# Fixtures
+
+Raw device output, committed so every parser can be exercised without hardware.
+Each device directory holds the same five files:
+
+| File | Source on the device |
+| --- | --- |
+| `proc-stat.txt` | `cat /proc/stat` |
+| `proc-meminfo.txt` | `cat /proc/meminfo` |
+| `dumpsys-battery.txt` | `dumpsys battery` |
+| `dumpsys-thermalservice.txt` | `dumpsys thermalservice` |
+| `cpufreq.json` | `cat /sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq`, one entry per core, in core order |
+
+`cpufreq.json` is a JSON array rather than a copied shell transcript: the
+per-core reads are separate shell calls, and storing them as an array keeps the
+core boundary visible instead of losing it in line breaks.
+
+## Provenance
+
+| Directory | Status |
+| --- | --- |
+| `mtk-tb8781p4` | **Real capture**, taken straight from the device. MediaTek MT8781 (`vext_tb8781p4_64_wifi`, `ro.hardware=mt8781`, arm64-v8a, Android 17 / SDK 37), 8 cores. |
+| `qcom-reference` | **Synthesised, not captured.** Shaped after a Qualcomm dump (`AC powered`, `current now`, `POWER_AMPLIFIER` / `BCL_VOLTAGE` zones) so the parsers are not only exercised against MediaTek output. Replace it with a real capture as soon as a Qualcomm device is on hand. |
+
+## Adding a device
+
+Capture the five files above into a new directory and add one row to the table
+in `devices.test.ts`. No parser changes should be needed; if one is, that is
+the signal the parsers over-fit a single platform.

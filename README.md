@@ -57,6 +57,21 @@ For more detailed usage instructions, please read the documentation at [aya.liri
 * [vivy](https://github.com/liriliri/vivy): Icon image generation.
 * [echo](https://github.com/liriliri/echo): Harmony OS version of AYA.
 
+## Development
+
+```bash
+npm install
+npm run dev        # watch main, preload and renderer
+npm test           # run the whole test suite once
+npm run test:watch # re-run on change
+```
+
+Tests live beside the code they cover (`*.test.ts`) and run in plain Node - no
+device, no Electron and no DOM. The device-facing parsers under
+`src/common/metrics` are pure functions over captured device output; the
+fixtures they run against, and how to add a new device to them, are described in
+`src/common/metrics/__fixtures__/README.md`.
+
 ## Contribution
 
 Read [Contributing Guide](https://aya.liriliri.io/guide/contributing.html) for development setup instructions.
