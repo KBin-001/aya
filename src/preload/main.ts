@@ -1,4 +1,6 @@
 import {
+  IpcStartMtkLog,
+  IpcStopMtkLog,
   IpcClearPackage,
   IpcCheckUnlockRemountEnv,
   IpcCloseLogcat,
@@ -12,7 +14,10 @@ import {
   IpcDisconnectDevice,
   IpcDumpWindowHierarchy,
   IpcEnablePackage,
-  IpcExportMtkLog,
+  IpcCancelLogExport,
+  IpcDetectLogPaths,
+  IpcDetectPlatform,
+  IpcExportLog,
   IpcForward,
   IpcGetAvds,
   IpcGetDevices,
@@ -21,6 +26,10 @@ import {
   IpcGetMetrics,
   IpcGetPackageInfos,
   IpcGetPackages,
+  IpcGetScenes,
+  IpcOpenSceneFolder,
+  IpcRunScene,
+  IpcSaveScene,
   IpcGetProcesses,
   IpcGetTopPackage,
   IpcGetWebviews,
@@ -133,7 +142,12 @@ export default Object.assign(mainObj, {
   pairDevice: invoke<IpcPairDevice>('pairDevice'),
   runAdbScript: invoke<IpcRunAdbScript>('runAdbScript'),
   connectWifi: invoke<IpcConnectWifi>('connectWifi'),
-  exportMtkLog: invoke<IpcExportMtkLog>('exportMtkLog'),
+  detectPlatform: invoke<IpcDetectPlatform>('detectPlatform'),
+  detectLogPaths: invoke<IpcDetectLogPaths>('detectLogPaths'),
+  exportLog: invoke<IpcExportLog>('exportLog'),
+  cancelLogExport: invoke<IpcCancelLogExport>('cancelLogExport'),
+  startMtkLog: invoke<IpcStartMtkLog>('startMtkLog'),
+  stopMtkLog: invoke<IpcStopMtkLog>('stopMtkLog'),
   checkUnlockRemountEnv: invoke<IpcCheckUnlockRemountEnv>(
     'checkUnlockRemountEnv'
   ),
@@ -141,4 +155,8 @@ export default Object.assign(mainObj, {
     'runUnlockRemountStep'
   ),
   getFileUrl: invoke<IpcGetFileUrl>('getFileUrl'),
+  getScenes: invoke<IpcGetScenes>('getScenes'),
+  runScene: invoke<IpcRunScene>('runScene'),
+  saveScene: invoke<IpcSaveScene>('saveScene'),
+  openSceneFolder: invoke<IpcOpenSceneFolder>('openSceneFolder'),
 })

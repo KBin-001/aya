@@ -21,6 +21,8 @@ import isEmpty from 'licia/isEmpty'
 import * as base from './adb/base'
 import { shell, getAdbPath, spawnAdb, isRooted } from './adb/base'
 import * as logcat from './adb/logcat'
+import * as mtklog from './adb/mtklog'
+import * as logexport from './adb/logexport'
 import * as shellAdb from './adb/shell'
 import * as server from './adb/server'
 import * as scrcpy from './adb/scrcpy'
@@ -38,7 +40,6 @@ import {
   IpcConnectWifi,
   IpcDisconnectDevice,
   IpcDumpWindowHierarchy,
-  IpcExportMtkLog,
   IpcCheckUnlockRemountEnv,
   IpcGetDevices,
   IpcInputKey,
@@ -716,85 +717,6 @@ async function isWifiEnabled(deviceId: string) {
   return trim(setting.stdout) === '1'
 }
 
-const MTK_LOG_OUTPUT_DIR = 'D:\\桌面\\MTK_LOG'
-
-const exportMtkLog: IpcExportMtkLog = async function (
-  deviceId,
-  sourcePath,
-  outputDir
-) {
-  sourcePath = trim(sourcePath)
-  if (!sourcePath) {
-    throw new Error('MTK log source path is empty')
-  }
-  outputDir = trim(outputDir) || MTK_LOG_OUTPUT_DIR
-
-  await fs.ensureDir(outputDir)
-  const folderName = `${formatTime(new Date())}-debuglogger`
-  const dest = path.join(outputDir, folderName)
-  const result = await pullMtkLog(deviceId, sourcePath, folderName, outputDir)
-  if (result.code === 0) {
-    return dest
-  }
-
-  await spawnAdb(['-s', deviceId, 'root'])
-  await sleep(2000)
-  await spawnAdb(['-s', deviceId, 'wait-for-device'])
-
-  const retry = await pullMtkLog(deviceId, sourcePath, folderName, outputDir)
-  if (retry.code !== 0) {
-    throw new Error(retry.stderr || retry.stdout || 'Export MTK log failed')
-  }
-
-  return dest
-}
-
-function pullMtkLog(
-  deviceId: string,
-  sourcePath: string,
-  folderName: string,
-  outputDir: string
-) {
-  return spawnAdbWithCwd(
-    ['-s', deviceId, 'pull', sourcePath, folderName],
-    outputDir
-  )
-}
-
-function spawnAdbWithCwd(args: string[], cwd: string) {
-  return new Promise<{ stdout: string; stderr: string; code: number | null }>(
-    (resolve, reject) => {
-      const cp = childProcess.spawn(getAdbPath(), args, {
-        cwd,
-        env: { ...process.env },
-      })
-      let stdout = ''
-      let stderr = ''
-      cp.stdout?.on('data', (data) => {
-        stdout += data.toString()
-      })
-      cp.stderr?.on('data', (data) => {
-        stderr += data.toString()
-      })
-      cp.on('error', (err) => {
-        reject(err)
-      })
-      cp.on('close', (code) => {
-        resolve({ stdout, stderr, code })
-      })
-    }
-  )
-}
-
-function formatTime(date: Date) {
-  const pad = (num: number) => num.toString().padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate()
-  )}-${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(
-    date.getSeconds()
-  )}`
-}
-
 const inputKey: IpcInputKey = async function (deviceId, keyCode) {
   await base.shell(deviceId, `input keyevent ${keyCode}`)
 }
@@ -894,6 +816,8 @@ export async function init() {
 
   base.init(client)
   logcat.init(client)
+  mtklog.init(client)
+  logexport.init(client)
   shellAdb.init(client)
   server.init(client)
   scrcpy.init(client)
@@ -925,7 +849,6 @@ export async function init() {
   handleEvent('pairDevice', pairDevice)
   handleEvent('runAdbScript', runAdbScript)
   handleEvent('connectWifi', connectWifi)
-  handleEvent('exportMtkLog', exportMtkLog)
   handleEvent('checkUnlockRemountEnv', checkUnlockRemountEnv)
   handleEvent('runUnlockRemountStep', runUnlockRemountStep)
 }

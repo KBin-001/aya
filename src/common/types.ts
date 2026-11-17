@@ -1,4 +1,5 @@
 import { IMetricsSnapshot } from './metrics/types'
+import type { IPlatformMatch, LogPlatform } from './logexport'
 
 export interface IDevice {
   id: string
@@ -115,11 +116,82 @@ export type IpcConnectWifi = (
   wasEnabled: boolean
   enabled: boolean
 }>
-export type IpcExportMtkLog = (
+export type IpcDetectPlatform = (
+  deviceId: string
+) => Promise<IPlatformMatch>
+
+export interface ILogPathValidity {
+  path: string
+  exists: boolean
+  readable: boolean
+}
+
+export type IpcDetectLogPaths = (
+  deviceId: string,
+  paths: string[]
+) => Promise<ILogPathValidity[]>
+
+export interface ILogExportProgress {
+  message: string
+}
+
+export type ILogExportStatus = 'success' | 'cancelled'
+
+export interface ILogExportResult {
+  status: ILogExportStatus
+  outputDir: string
+  files: string[]
+  log: string
+}
+
+export type IpcExportLog = (
   deviceId: string,
   sourcePath: string,
+  outputDir: string,
+  platform: LogPlatform
+) => Promise<ILogExportResult>
+
+export type IpcCancelLogExport = () => void
+
+export type IMtkLogMethod = 'mtklogger' | 'fallback'
+
+export interface IMtkLogCaptureResult {
+  /** Which capture path was used */
+  method: IMtkLogMethod
+  /** Local folder where the collected logs were written */
   outputDir: string
-) => Promise<string>
+  /** Relative file/folder names collected under outputDir */
+  files: string[]
+  /** Whether the on-device DebugLoggerUI (MTKLogger) was detected */
+  hasMtkLogger: boolean
+  /** Human-readable summary of what happened */
+  log: string
+}
+
+export interface IMtkLogStartResult {
+  hasMtkLogger: boolean
+  rooted: boolean
+  message: string
+}
+
+/**
+ * Start an MTK kernel-log capture session. Elevates to root (userdebug) and,
+ * when MTKLogger is present, kicks its Mobile Log capture as a best effort —
+ * but the live kernel stream itself does not depend on MTKLogger.
+ */
+export type IpcStartMtkLog = (deviceId: string) => Promise<IMtkLogStartResult>
+
+/**
+ * Stop the capture and export. `text` is the kernel log accumulated in the
+ * renderer while the session was running; it is always written to a local
+ * file so the export is never empty. On-device MTK_LOG folders are pulled as
+ * a best effort on top of that.
+ */
+export type IpcStopMtkLog = (
+  deviceId: string,
+  outputDir: string,
+  text: string
+) => Promise<IMtkLogCaptureResult>
 export interface IUnlockRemountEnv {
   adbPath: string
   fastbootPath: string
@@ -164,7 +236,7 @@ export type IpcResizeShell = (
 ) => void
 export type IpcKillShell = (sessionId: string) => void
 export type IpcScreencap = (deviceId: string) => Promise<string>
-export type IpcLogSource = 'logcat' | 'kernel'
+export type IpcLogSource = 'logcat' | 'kernel' | 'mtklog'
 export type IpcOpenLogcat = (
   deviceId: string,
   source?: IpcLogSource
@@ -232,3 +304,76 @@ export type IpcGetFileUrl = (
   path: string,
   port?: number
 ) => Promise<string>
+
+// Quick scenes (快捷场景)
+export type ISceneStepType =
+  | 'wait-device'
+  | 'install'
+  | 'push'
+  | 'shell'
+  | 'start'
+  | 'input'
+  | 'sleep'
+
+export interface ISceneStep {
+  type: ISceneStepType
+  /** Display title of the step */
+  title?: string
+  /** install: apk file name relative to scene folder */
+  apk?: string
+  /** install: extra adb install args, e.g. ['-r'] */
+  args?: string[]
+  /** push: local file path relative to scene folder */
+  src?: string
+  /** push: destination path on device */
+  dest?: string
+  /** shell: shell command to run on device */
+  command?: string
+  /** start: package name to launch */
+  package?: string
+  /** start: optional activity name (package/activity) */
+  activity?: string
+  /** input: keycode number or name, e.g. 27 or 'KEYCODE_CAMERA' */
+  keyCode?: string | number
+  /** sleep: milliseconds to wait */
+  ms?: number
+  /** If true, a step failure will not abort the scene */
+  optional?: boolean
+}
+
+export interface IScene {
+  id: string
+  /** Display name of the scene */
+  name: string
+  /** Emoji or icon text, e.g. '🔊' */
+  icon?: string
+  description?: string
+  steps: ISceneStep[]
+}
+
+export interface ISceneStepResult {
+  index: number
+  type: string
+  title: string
+  command: string
+  success: boolean
+  code: number | null
+  stdout: string
+  stderr: string
+  message: string
+  duration: number
+}
+
+export interface ISceneRunResult {
+  sceneId: string
+  success: boolean
+  steps: ISceneStepResult[]
+}
+
+export type IpcGetScenes = () => Promise<IScene[]>
+export type IpcRunScene = (
+  deviceId: string,
+  sceneId: string
+) => Promise<ISceneRunResult>
+export type IpcSaveScene = (scene: IScene) => Promise<void>
+export type IpcOpenSceneFolder = (sceneId: string) => Promise<void>

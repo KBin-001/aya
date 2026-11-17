@@ -5,6 +5,13 @@
 export type LogPlatform = 'mtk' | 'unisoc'
 
 /**
+ * A platform classification outcome: a recognised platform, or `unknown` when
+ * no property matched (never a guess, so the caller can fall back to manual
+ * selection).
+ */
+export type DetectedPlatform = LogPlatform | 'unknown'
+
+/**
  * A platform's log-directory configuration: an ordered list of candidate paths
  * plus the path the user last picked. `selected` may point at a path that is no
  * longer valid; selection logic falls back to the candidates in that case.

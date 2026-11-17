@@ -1,17 +1,16 @@
 import { observer } from 'mobx-react-lite'
 import store from '../../store'
-import { Terminal, ITheme } from '@xterm/xterm'
+import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   colorBgContainer,
-  colorBgContainerDark,
   colorPrimary,
   colorText,
-  colorTextDark,
   fontFamilyCode,
 } from 'common/theme'
 import copy from 'licia/copy'
@@ -20,6 +19,13 @@ import '@xterm/xterm/css/xterm.css'
 import { t } from 'common/util'
 import contextMenu from 'share/renderer/lib/contextMenu'
 import isHidden from 'licia/isHidden'
+import { isShellCommand } from './commands'
+
+export interface ShellStatus {
+  uid?: number
+  root: boolean
+  cwd: string
+}
 
 interface ITermProps {
   visible: boolean
@@ -28,9 +34,11 @@ interface ITermProps {
   onCreate: (terminal: Terminal) => void
   onCreateInputSetter: (setter: (value: string) => void) => void
   onCommand: (command: string) => void
+  onStatus: (status?: ShellStatus) => void
 }
 
 export default observer(function Term(props: ITermProps) {
+  const [restart, setRestart] = useState(0)
   const terminalRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal>(null)
   const fitAddonRef = useRef<FitAddon>(null)
@@ -42,6 +50,10 @@ export default observer(function Term(props: ITermProps) {
   const outputBufferRef = useRef<string[]>([])
   const writingRef = useRef(false)
   const disposedRef = useRef(false)
+  const promptRef = useRef('')
+  const reportedStatusRef = useRef<ShellStatus | undefined>(undefined)
+  const metadataOnPromptRef = useRef(false)
+  const listenersRef = useRef<Array<{ dispose: () => void }>>([])
 
   const { device } = store
   historyRef.current = props.history
@@ -50,8 +62,9 @@ export default observer(function Term(props: ITermProps) {
     disposedRef.current = false
     const term = new Terminal({
       allowProposedApi: true,
-      fontSize: 14,
+      fontSize: 18,
       fontFamily: fontFamilyCode,
+      lineHeight: 1.3,
       theme: getTheme(store.theme === 'dark'),
     })
 
@@ -86,40 +99,93 @@ export default observer(function Term(props: ITermProps) {
       writeOutput(data)
     }
     const offShellData = main.on('shellData', onShellData)
-
-    if (device) {
-      main.createShell(device.id).then((id) => {
-        setSessionId(id)
-        term.onData(handleTermData)
-        term.onResize((size) => {
-          main.resizeShell(sessionIdRef.current, size.cols, size.rows)
-        })
-        fit()
-      })
-    }
+    const offShellClose = main.on('shellClose', (id: string) => {
+      if (sessionIdRef.current === id) {
+        disposeShellListeners()
+        setSessionId('')
+      }
+    })
+    const osc = term.parser.registerOscHandler(633, (data) => {
+      const match = /^AYA;(\d+);([^\r\n]*)$/.exec(data)
+      if (!match) {
+        return false
+      }
+      const uid = Number(match[1])
+      metadataOnPromptRef.current = true
+      reportStatus({ uid, root: uid === 0, cwd: match[2] })
+      return true
+    })
 
     return () => {
       disposedRef.current = true
       outputBufferRef.current = []
       offShellData()
-      if (sessionIdRef.current) {
-        main.killShell(sessionIdRef.current)
-      }
+      offShellClose()
+      osc.dispose()
       term.dispose()
       window.removeEventListener('resize', fit)
     }
   }, [])
 
+  // The shell session is tied to the device, but the terminal itself is not:
+  // when the device disconnects only the dead session is dropped, so everything
+  // already on screen stays readable (and is still there after reconnecting).
+  // The table is only cleared when the app exits or the tab is closed.
   useEffect(() => {
-    if (fitAddonRef.current && props.visible) {
-      fitAddonRef.current.fit()
+    const deviceId = device ? device.id : ''
+    const term = termRef.current
+    if (!term || !deviceId) {
+      return
     }
-    if (props.visible) {
-      setTimeout(() => {
-        if (termRef.current) {
-          termRef.current.focus()
+
+    // The session that just died never wrote a trailing newline, so without this
+    // every reconnect would pile another prompt onto the same line. Only do it
+    // when there is something on the current line (a fresh terminal is empty).
+    if (readInputLine()) {
+      outputBufferRef.current.push('\r\n')
+      flushOutput()
+    }
+
+    let cancelled = false
+    main.createShell(deviceId).then((id) => {
+      if (cancelled || disposedRef.current) {
+        main.killShell(id)
+        return
+      }
+      disposeShellListeners()
+      listenersRef.current = [
+        term.onData(handleTermData),
+        term.onResize((size) => {
+          main.resizeShell(sessionIdRef.current, size.cols, size.rows)
+        }),
+      ]
+      setSessionId(id)
+      if (fitAddonRef.current && !isHidden(terminalRef.current!)) {
+        fitAddonRef.current.fit()
+      }
+    }).catch(() => {
+      if (!cancelled && !disposedRef.current) {
+        setSessionId('')
+      }
+    })
+
+    return () => {
+      cancelled = true
+      disposeShellListeners()
+      if (sessionIdRef.current) {
+        main.killShell(sessionIdRef.current)
+        sessionIdRef.current = ''
+        if (!disposedRef.current) {
+          setSessionId('')
         }
-      }, 500)
+      }
+    }
+  }, [device ? device.id : '', restart])
+
+  useEffect(() => {
+    if (props.visible) {
+      fitAddonRef.current?.fit()
+      termRef.current?.focus()
     }
   }, [props.visible])
 
@@ -130,7 +196,49 @@ export default observer(function Term(props: ITermProps) {
 
   function setSessionId(id: string) {
     sessionIdRef.current = id
+    metadataOnPromptRef.current = false
+    reportStatus()
     props.onSessionIdChange(id)
+  }
+
+  function reportStatus(status?: ShellStatus) {
+    const previous = reportedStatusRef.current
+    if (
+      previous?.uid === status?.uid &&
+      previous?.root === status?.root &&
+      previous?.cwd === status?.cwd
+    ) {
+      return
+    }
+    reportedStatusRef.current = status
+    props.onStatus(status)
+  }
+
+  function readPromptStatus() {
+    const term = termRef.current
+    if (!sessionIdRef.current || !term || metadataOnPromptRef.current) {
+      return
+    }
+    const buffer = term.buffer.active
+    if (buffer.type !== 'normal') {
+      return
+    }
+    const line = buffer.getLine(buffer.baseY + buffer.cursorY)
+    const text = line?.translateToString(false, 0, buffer.cursorX)
+    // Nested shells and older ADB transports may only emit the Android prompt.
+    const match = text && /^(?:\d+\|)?[\w.@-]+:((?:\/|~)[^\r\n]*) ([#$]) $/.exec(text)
+    if (match) {
+      const root = match[2] === '#'
+      reportStatus({ cwd: match[1], root, uid: root ? 0 : undefined })
+    }
+  }
+
+  /** Re-binding on every reconnect would otherwise duplicate keystroke input. */
+  function disposeShellListeners() {
+    for (const listener of listenersRef.current) {
+      listener.dispose()
+    }
+    listenersRef.current = []
   }
 
   function writeOutput(data: string) {
@@ -156,6 +264,7 @@ export default observer(function Term(props: ITermProps) {
         return
       }
       writingRef.current = false
+      readPromptStatus()
       if (outputBufferRef.current.length) {
         requestAnimationFrame(flushOutput)
       }
@@ -163,10 +272,15 @@ export default observer(function Term(props: ITermProps) {
   }
 
   function handleTermData(data: string) {
-    if (handleHistoryKeys(data)) {
-      return
+    if (!handleHistoryKeys(data)) {
+      writeInput(data)
     }
+  }
 
+  function writeInput(data: string) {
+    if (['\r', '\n', '\x03', '\x04'].some((key) => data.includes(key))) {
+      metadataOnPromptRef.current = false
+    }
     trackInput(data)
     main.writeShell(sessionIdRef.current, data)
   }
@@ -223,11 +337,17 @@ export default observer(function Term(props: ITermProps) {
   }
 
   function replaceInput(value: string) {
+    if (!sessionIdRef.current || (value !== '' && !isShellCommand(value))) {
+      return
+    }
     inputRef.current = value
     main.writeShell(sessionIdRef.current, `\x15${value}`)
   }
 
   function trackInput(data: string) {
+    if (!inputRef.current) {
+      snapshotPrompt()
+    }
     for (let i = 0; i < data.length; i++) {
       const char = data[i]
       if (char === '\x1b') {
@@ -268,10 +388,76 @@ export default observer(function Term(props: ITermProps) {
     return data.length - 1
   }
 
+  /** Text currently on the terminal's input line (trailing blanks trimmed). */
+  function readInputLine() {
+    const term = termRef.current
+    if (!term) {
+      return ''
+    }
+    const buffer = term.buffer.active
+    const line = buffer.getLine(buffer.baseY + buffer.cursorY)
+    return line ? line.translateToString(true) : ''
+  }
+
+  /**
+   * Remember the prompt so a rewritten line can be split into prompt + command.
+   * Called right before the first keystroke of a line, while the line still
+   * holds nothing but the prompt.
+   */
+  function snapshotPrompt() {
+    if (promptRef.current) {
+      return
+    }
+    const line = readInputLine()
+    if (line) {
+      promptRef.current = line
+    }
+  }
+
+  /**
+   * Resolve the command that is really on the input line.
+   *
+   * Keystroke tracking alone only sees what the user typed, while the shell may
+   * rewrite the line itself — tab completion (`cat foo<TAB>` becomes
+   * `cat foobar`) is the common case, cursor editing another. The screen always
+   * shows the final line, so read it back and fall back to the tracked
+   * keystrokes whenever the screen cannot be trusted.
+   */
+  function resolveCommand(typed: string): string {
+    if (!typed) {
+      return ''
+    }
+
+    const line = readInputLine()
+    if (!line) {
+      return typed
+    }
+
+    // Untouched case: the line is exactly the prompt plus what was typed, which
+    // also lets us learn the prompt.
+    if (line.endsWith(typed)) {
+      promptRef.current = line.slice(0, line.length - typed.length)
+      return typed
+    }
+
+    const prompt = promptRef.current
+    if (prompt && line.startsWith(prompt)) {
+      const onScreen = line.slice(prompt.length).trim()
+      // Reject a line that is merely trailing behind our keystrokes (echo lag,
+      // or a paste that has not been written to the shell yet), otherwise the
+      // recorded command would be truncated.
+      if (onScreen && !typed.startsWith(onScreen)) {
+        return onScreen
+      }
+    }
+
+    return typed
+  }
+
   function commitInput() {
-    const input = inputRef.current.trim()
-    if (input) {
-      props.onCommand(input)
+    const command = resolveCommand(inputRef.current).trim()
+    if (command) {
+      props.onCommand(command)
     }
     inputRef.current = ''
     historyIdxRef.current = -1
@@ -281,8 +467,7 @@ export default observer(function Term(props: ITermProps) {
   async function pasteClipboard() {
     const text = await navigator.clipboard.readText()
     if (text) {
-      trackInput(text)
-      main.writeShell(sessionIdRef.current, text)
+      writeInput(text)
       termRef.current?.focus()
     }
   }
@@ -330,16 +515,14 @@ export default observer(function Term(props: ITermProps) {
       {
         label: t('reset'),
         click() {
-          if (sessionIdRef.current) {
-            main.killShell(sessionIdRef.current)
-          }
+          inputRef.current = ''
+          promptRef.current = ''
+          historyIdxRef.current = -1
+          historyDraftRef.current = ''
+          outputBufferRef.current = []
           term.reset()
-          if (device) {
-            main.createShell(device.id).then((id) => {
-              setSessionId(id)
-            })
-            term.focus()
-          }
+          setRestart((value) => value + 1)
+          term.focus()
         },
       },
       {
@@ -378,24 +561,23 @@ export default observer(function Term(props: ITermProps) {
   )
 })
 
-function getTheme(dark = false) {
-  let theme: ITheme = {
-    background: colorBgContainer,
-    foreground: colorText,
-    cursor: colorText,
-  }
-
+function getTheme(dark = false): ITheme {
   if (dark) {
-    theme = {
-      background: colorBgContainerDark,
-      foreground: colorTextDark,
-      cursor: colorTextDark,
+    return {
+      background: '#0e1022',
+      foreground: '#eae8f5',
+      cursor: '#b383f5',
+      cursorAccent: '#0e1022',
+      selectionForeground: '#fff',
+      selectionBackground: '#47346d',
     }
   }
 
   return {
+    background: colorBgContainer,
+    foreground: colorText,
+    cursor: colorText,
     selectionForeground: '#fff',
     selectionBackground: colorPrimary,
-    ...theme,
   }
 }

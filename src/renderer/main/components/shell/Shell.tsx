@@ -1,35 +1,55 @@
 import { observer } from 'mobx-react-lite'
-import LunaToolbar, { LunaToolbarSpace } from 'luna-toolbar/react'
 import Term from './Term'
+import type { ShellStatus } from './Term'
+import ShellCommandPalette from './ShellCommandPalette'
+import { isShellCommand } from './commands'
 import LunaTab, { LunaTabItem } from 'luna-tab/react'
 import { t } from 'common/util'
-import ToolbarIcon from 'share/renderer/components/ToolbarIcon'
 import store from '../../store'
 import Style from './Shell.module.scss'
 import className from 'licia/className'
-import { CSSProperties, useEffect, useRef, useState } from 'react'
+import { CSSProperties, useEffect, useId, useRef, useState } from 'react'
 import uuid from 'licia/uuid'
 import map from 'licia/map'
 import filter from 'licia/filter'
-import LunaCommandPalette from 'luna-command-palette/react'
 import find from 'licia/find'
 import idxOf from 'licia/idxOf'
-import truncate from 'licia/truncate'
 import { Terminal } from '@xterm/xterm'
 import { notify } from 'share/renderer/lib/util'
-import copy from 'licia/copy'
 import LunaModal from 'luna-modal'
 import contextMenu from 'share/renderer/lib/contextMenu'
 import { IUnlockRemountResult, IUnlockRemountStep } from 'common/types'
+import {
+  DEFAULT_MTK_PATHS,
+  DEFAULT_UNISOC_PATHS,
+  migrateLogExportConfig,
+  platformLabel,
+  resolvePlatform,
+  selectLogPath,
+} from 'common/logexport'
+import type {
+  DetectedPlatform,
+  ILogExportConfig,
+  ILogPathConfig,
+  LogPlatform,
+} from 'common/logexport'
+import type {
+  ILogExportProgress,
+  ILogExportResult,
+  ILogPathValidity,
+} from 'common/types'
+import LogExportPanel from './LogExportPanel'
 
 const HISTORY_LIMIT = 50
 const HISTORY_STORAGE_KEY = 'aya.shell.history'
-const DEFAULT_MTK_LOG_SOURCE = '/sdcard/debuglogger'
-const MTK_LOG_SOURCE_STORAGE_KEY = 'aya.shell.mtkLogSource'
-const MTK_LOG_SOURCE2_STORAGE_KEY = 'aya.shell.mtkLogSource2'
-const MTK_LOG_ACTIVE_STORAGE_KEY = 'aya.shell.mtkLogActive'
-const DEFAULT_MTK_LOG_OUTPUT_DIR = 'D:\\桌面\\MTK_LOG'
-const MTK_LOG_OUTPUT_DIR_STORAGE_KEY = 'aya.shell.mtkLogOutputDir'
+const FAVORITES_STORAGE_KEY = 'aya.shell.favorites'
+const LOG_EXPORT_CONFIG_STORAGE_KEY = 'aya.shell.logExportConfig'
+const LEGACY_MTK_LOG_KEYS = {
+  source: 'aya.shell.mtkLogSource',
+  source2: 'aya.shell.mtkLogSource2',
+  active: 'aya.shell.mtkLogActive',
+  outputDir: 'aya.shell.mtkLogOutputDir',
+}
 const WIFI_STORAGE_KEY = 'aya.shell.wifi'
 
 interface IShell {
@@ -43,18 +63,23 @@ interface IShell {
 export default observer(function Shell() {
   const [shells, setShells] = useState<Array<IShell>>([])
   const [commandPaletteVisible, setCommandPaletteVisible] = useState(false)
-  const [selectedShell, setSelectedShell] = useState<IShell>({
-    id: '',
-    name: '',
-    sessionId: '',
-  })
-  const [history, setHistory] = useState<string[]>(loadHistory)
-  const [mtkLogSource, setMtkLogSource] = useState(loadMtkLogSource)
-  const [mtkLogSource2, setMtkLogSource2] = useState(loadMtkLogSource2)
-  const [mtkLogActive, setMtkLogActive] = useState(loadMtkLogActive)
-  const [mtkLogOutputDir, setMtkLogOutputDir] = useState(
-    loadMtkLogOutputDir
-  )
+  const [selectedShell, setSelectedShell] = useState<IShell>()
+  const [history, setHistory] = useState(() => loadHistory(HISTORY_STORAGE_KEY))
+  const [favorites, setFavorites] = useState(() => loadHistory(FAVORITES_STORAGE_KEY))
+  const [statuses, setStatuses] = useState<Partial<Record<string, ShellStatus>>>({})
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyQuery, setHistoryQuery] = useState('')
+  const historyId = useId()
+  const historyButtonRef = useRef<HTMLButtonElement>(null)
+  const [logConfig, setLogConfig] = useState(loadLogConfig)
+  const [detected, setDetected] = useState<DetectedPlatform>('unknown')
+  const [detectedKeyword, setDetectedKeyword] = useState<string | null>(null)
+  const [pathValidity, setPathValidity] = useState<ILogPathValidity[]>([])
+  const [logExporting, setLogExporting] = useState(false)
+  const [logExportStatus, setLogExportStatus] = useState('')
+  const [logExportResult, setLogExportResult] =
+    useState<ILogExportResult | null>(null)
+  const [logPanelVisible, setLogPanelVisible] = useState(false)
   const [wifi, setWifi] = useState<IWifiConfig>(loadWifi)
   const [runningScript, setRunningScript] = useState('')
   const [unlockRemountVisible, setUnlockRemountVisible] = useState(false)
@@ -71,8 +96,114 @@ export default observer(function Shell() {
   >({})
   const numRef = useRef(1)
   const { device } = store
+  const connected = device?.type === 'device' || device?.type === 'emulator'
+  const status = selectedShell && statuses[selectedShell.id]
+
+  const platform = resolvePlatform(logConfig, detected)
+  const pathConfig: ILogPathConfig | null =
+    platform === 'unknown' ? null : logConfig.platforms[platform]
+  const validityByPath: Record<string, boolean> = {}
+  for (const item of pathValidity) {
+    validityByPath[item.path] = item.exists && item.readable
+  }
+  const effectiveLogPath = pathConfig
+    ? selectLogPath(pathConfig, validityByPath)
+    : null
+
+  useEffect(() => saveHistory(HISTORY_STORAGE_KEY, history), [history])
+  useEffect(() => saveHistory(FAVORITES_STORAGE_KEY, favorites), [favorites])
+
+  useEffect(() => {
+    if (store.panel !== 'shell' || unlockRemountVisible) return
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        !event.altKey &&
+        !event.isComposing &&
+        event.code === 'KeyP'
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+        setHistoryOpen(false)
+        setHistoryQuery('')
+        setCommandPaletteVisible(true)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [store.panel, unlockRemountVisible])
 
   useEffect(() => add(), [])
+
+  // Re-detect the chip platform whenever the selected device changes.
+  useEffect(() => {
+    if (!device) {
+      setDetected('unknown')
+      setDetectedKeyword(null)
+      return
+    }
+    let cancelled = false
+    main
+      .detectPlatform(device.id)
+      .then((match) => {
+        if (!cancelled) {
+          setDetected(match.platform)
+          setDetectedKeyword(match.keyword)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetected('unknown')
+          setDetectedKeyword(null)
+          notify('平台识别失败，已按未知平台处理，可在管理面板手动选择', {
+            icon: 'info',
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [device?.id])
+
+  // Re-probe the current platform's candidate paths.
+  useEffect(() => {
+    if (!device || platform === 'unknown' || !pathConfig) {
+      setPathValidity([])
+      return
+    }
+    if (pathConfig.paths.length === 0) {
+      setPathValidity([])
+      return
+    }
+    let cancelled = false
+    main
+      .detectLogPaths(device.id, pathConfig.paths)
+      .then((validity) => {
+        if (!cancelled) {
+          setPathValidity(validity)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPathValidity([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [device?.id, platform, pathConfig?.paths.join('|')])
+
+  // Surface export progress pushed from the main process.
+  useEffect(() => {
+    const off = main.on('logExportProgress', (progress: ILogExportProgress) => {
+      setLogExportStatus(progress.message)
+    })
+    return () => {
+      off()
+    }
+  }, [])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -88,12 +219,13 @@ export default observer(function Shell() {
 
   function add() {
     const id = uuid()
+    const number = numRef.current++
     const shell = {
       id,
-      name: `${t('shell')} ${numRef.current++}`,
+      name: number === 1 ? 'Android Shell' : `Android Shell ${number}`,
       sessionId: '',
     }
-    setShells([...shells, shell])
+    setShells((shells) => [...shells, shell])
     setSelectedShell(shell)
   }
 
@@ -102,6 +234,11 @@ export default observer(function Shell() {
     let closedIdx = idxOf(shells, closedShell)
     const newShells = filter(shells, (shell) => shell.id !== id)
     setShells(newShells)
+    setStatuses((previous) => {
+      const next = { ...previous }
+      delete next[id]
+      return next
+    })
 
     if (closedShell === selectedShell) {
       if (closedIdx >= newShells.length) {
@@ -118,7 +255,7 @@ export default observer(function Shell() {
         id={shell.id}
         title={shell.name}
         closable={true}
-        selected={selectedShell.id === shell.id}
+        selected={selectedShell?.id === shell.id}
       />
     )
   })
@@ -138,38 +275,77 @@ export default observer(function Shell() {
           shell.setInput = setter
         }}
         onCommand={addHistory}
-        visible={selectedShell.id === shell.id && store.panel === 'shell'}
+        onStatus={(status) => setStatuses((previous) => ({
+          ...previous,
+          [shell.id]: status,
+        }))}
+        visible={selectedShell?.id === shell.id && store.panel === 'shell'}
       />
     )
   })
 
   function addHistory(command: string) {
-    setHistory((history) => {
-      const next = [command, ...filter(history, (item) => item !== command)]
-      const savedHistory = next.slice(0, HISTORY_LIMIT)
-      saveHistory(savedHistory)
-      return savedHistory
-    })
-  }
-
-  function clearHistory() {
-    setHistory([])
-    localStorage.removeItem(HISTORY_STORAGE_KEY)
-  }
-
-  const commands = map(getCommands(), ([title, command]) => {
-    return {
-      title: `${title} (${truncate(command, 95 - title.length)})`,
-      handler: () => {
-        main.writeShell(selectedShell.sessionId, command)
-        setTimeout(() => {
-          if (selectedShell.terminal) {
-            selectedShell.terminal.focus()
-          }
-        }, 500)
-      },
+    if (isShellCommand(command)) {
+      setHistory((items) => [command, ...items.filter((item) => item !== command)].slice(0, HISTORY_LIMIT))
     }
-  })
+  }
+
+  async function editHistory(command: string) {
+    const edited = (await LunaModal.prompt(t('edit'), command))?.trim()
+    if (!isShellCommand(edited) || edited === command) return
+    const replace = (items: string[]) => Array.from(
+      new Set(items.map((item) => item === command ? edited : item))
+    )
+    setHistory(replace)
+    setFavorites(replace)
+  }
+
+  function deleteHistory(command: string) {
+    const remove = (items: string[]) => items.filter((item) => item !== command)
+    setHistory(remove)
+    setFavorites(remove)
+  }
+
+  function toggleFavorite(command: string) {
+    setFavorites((items) => items.includes(command)
+      ? items.filter((item) => item !== command)
+      : [command, ...items])
+  }
+
+  async function copyHistory(command: string) {
+    try {
+      const copied = await preload.writeClipboardText(command)
+      notify(t(copied ? 'shellHistory.copied' : 'shellHistory.copyFailed'), {
+        icon: copied ? 'success' : 'error',
+      })
+    } catch {
+      notify(t('shellHistory.copyFailed'), { icon: 'error' })
+    }
+  }
+
+  function closeHistory() {
+    setHistoryOpen(false)
+    setHistoryQuery('')
+    if (selectedShell?.terminal) {
+      selectedShell.terminal.focus()
+    } else {
+      historyButtonRef.current?.focus()
+    }
+  }
+
+  function closePalette() {
+    setCommandPaletteVisible(false)
+    requestAnimationFrame(() => selectedShell?.terminal?.focus())
+  }
+
+  function selectPaletteCommand(command: string) {
+    if (!selectedShell?.sessionId || !selectedShell.setInput) {
+      notify(t('deviceNotConnected'), { icon: 'error' })
+      return
+    }
+    selectedShell.setInput(command)
+    closePalette()
+  }
 
   async function runScript(script: IShellScript) {
     if (!device || runningScript) {
@@ -177,15 +353,7 @@ export default observer(function Shell() {
     }
     setRunningScript(script.id)
     try {
-      if (script.action === 'exportMtkLog') {
-        const source = mtkLogActive === '1' ? mtkLogSource : mtkLogSource2
-        const dest = await main.exportMtkLog(
-          device.id,
-          source,
-          mtkLogOutputDir
-        )
-        notify(`${script.title} completed: ${dest}`, { icon: 'success' })
-      } else if (script.action === 'unlockRemount') {
+      if (script.action === 'unlockRemount') {
         setUnlockRemountVisible(true)
       } else if (script.action === 'connectWifi') {
         const config = wifi.ssid ? wifi : await promptWifiConfig()
@@ -210,7 +378,7 @@ export default observer(function Shell() {
         await main.runAdbScript(device.id, script.commands!)
         notify(`${script.title} completed`, { icon: 'success' })
       }
-      selectedShell.terminal?.focus()
+      selectedShell?.terminal?.focus()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       notify(`${script.title} failed: ${message}`, { icon: 'error' })
@@ -221,12 +389,40 @@ export default observer(function Shell() {
 
   const scriptButtons = map(getShellScripts(), (script) => {
     const running = runningScript === script.id
-    const isExportMtkLog = script.action === 'exportMtkLog'
+    const isExportLog = script.action === 'exportLog'
     const isConnectWifi = script.action === 'connectWifi'
+
+    if (isExportLog) {
+      return (
+        <div className={Style.exportGroup} key={script.id}>
+          <button
+            className={Style.scriptButton}
+            style={{ '--tag-color': script.color } as CSSProperties}
+            title={`${script.description}\n当前路径：${
+              effectiveLogPath || '未检测到有效路径'
+            }\n导出路径：${logConfig.outputDir}\n右键打开管理面板`}
+            disabled={!device || logExporting}
+            onClick={runLogExport}
+            onContextMenu={openLogPanel}
+          >
+            {logExporting ? '导出中...' : '导出日志'}
+            <span className={Style.scriptBadge}>{platformLabel(platform)}</span>
+          </button>
+          <button
+            className={Style.scriptGear}
+            title="日志管理"
+            aria-label="日志管理"
+            disabled={!device}
+            onClick={openLogPanel}
+          >
+            <span className="icon-setting" aria-hidden="true" />
+          </button>
+        </div>
+      )
+    }
+
     let title = script.description
-    if (isExportMtkLog) {
-      title = `${script.description}\n路径1：${mtkLogSource}\n路径2：${mtkLogSource2}\n当前使用：路径${mtkLogActive}\n导出路径：${mtkLogOutputDir}\n右键切换 / 修改路径`
-    } else if (isConnectWifi) {
+    if (isConnectWifi) {
       title = `${script.description}\n当前WiFi：${wifi.ssid || '未配置'}\n右键修改名称和密码`
     }
     return (
@@ -238,9 +434,7 @@ export default observer(function Shell() {
         disabled={!device || !!runningScript}
         onClick={() => runScript(script)}
         onContextMenu={(e) => {
-          if (isExportMtkLog) {
-            showMtkLogMenu(e)
-          } else if (isConnectWifi) {
+          if (isConnectWifi) {
             showWifiMenu(e)
           }
         }}
@@ -535,99 +729,172 @@ export default observer(function Shell() {
     }
   }
 
-  function updateMtkLogSource(source: string) {
-    setMtkLogSource(source)
-    localStorage.setItem(MTK_LOG_SOURCE_STORAGE_KEY, source)
+  function currentLogPlatform(): LogPlatform {
+    return platform === 'mtk' || platform === 'unisoc' ? platform : 'mtk'
   }
 
-  function updateMtkLogSource2(source: string) {
-    setMtkLogSource2(source)
-    localStorage.setItem(MTK_LOG_SOURCE2_STORAGE_KEY, source)
+  function saveLogConfig(config: ILogExportConfig) {
+    setLogConfig(config)
+    localStorage.setItem(LOG_EXPORT_CONFIG_STORAGE_KEY, JSON.stringify(config))
   }
 
-  function updateMtkLogOutputDir(dir: string) {
-    setMtkLogOutputDir(dir)
-    localStorage.setItem(MTK_LOG_OUTPUT_DIR_STORAGE_KEY, dir)
+  function updateLogPathConfig(
+    target: LogPlatform,
+    updater: (pathConfig: ILogPathConfig) => ILogPathConfig
+  ) {
+    const next: ILogExportConfig = {
+      ...logConfig,
+      platforms: {
+        ...logConfig.platforms,
+        [target]: updater(logConfig.platforms[target]),
+      },
+    }
+    saveLogConfig(next)
   }
 
-  function switchMtkLogPath(active: '1' | '2') {
-    if (active === mtkLogActive) {
+  function addLogPath(path: string) {
+    updateLogPathConfig(currentLogPlatform(), (pathConfig) => ({
+      ...pathConfig,
+      paths: pathConfig.paths.includes(path)
+        ? pathConfig.paths
+        : [...pathConfig.paths, path],
+    }))
+  }
+
+  function removeLogPath(path: string) {
+    updateLogPathConfig(currentLogPlatform(), (pathConfig) => ({
+      ...pathConfig,
+      paths: pathConfig.paths.filter((item) => item !== path),
+      selected: pathConfig.selected === path ? null : pathConfig.selected,
+    }))
+  }
+
+  function modifyLogPath(oldPath: string, newPath: string) {
+    updateLogPathConfig(currentLogPlatform(), (pathConfig) => ({
+      ...pathConfig,
+      paths: pathConfig.paths.map((item) =>
+        item === oldPath ? newPath : item
+      ),
+      selected:
+        pathConfig.selected === oldPath ? newPath : pathConfig.selected,
+    }))
+  }
+
+  function selectLogPathManually(path: string) {
+    updateLogPathConfig(currentLogPlatform(), (pathConfig) => ({
+      ...pathConfig,
+      selected: path,
+    }))
+  }
+
+  function toggleAutoDetect(on: boolean) {
+    let manualPlatform = logConfig.manualPlatform
+    if (!on && !manualPlatform) {
+      manualPlatform = detected !== 'unknown' ? detected : 'mtk'
+    }
+    saveLogConfig({ ...logConfig, autoDetect: on, manualPlatform })
+  }
+
+  function selectManualPlatform(target: LogPlatform) {
+    saveLogConfig({
+      ...logConfig,
+      autoDetect: false,
+      manualPlatform: target,
+    })
+  }
+
+  function restoreDefaultLogPaths() {
+    const target = currentLogPlatform()
+    const defaults = target === 'mtk' ? DEFAULT_MTK_PATHS : DEFAULT_UNISOC_PATHS
+    updateLogPathConfig(target, () => ({
+      paths: [...defaults],
+      selected: null,
+    }))
+  }
+
+  function setLogOutputDir(dir: string) {
+    saveLogConfig({ ...logConfig, outputDir: dir })
+  }
+
+  function openLogPanel(e?: React.MouseEvent) {
+    e?.preventDefault()
+    setLogPanelVisible(true)
+  }
+
+  function closeLogPanel() {
+    setLogPanelVisible(false)
+  }
+
+  async function runLogExport() {
+    if (!device || logExporting) {
       return
     }
-    setMtkLogActive(active)
-    localStorage.setItem(MTK_LOG_ACTIVE_STORAGE_KEY, active)
-    notify(`已切换为路径${active}`, { icon: 'info' })
+    if (platform === 'unknown' || !pathConfig) {
+      notify('无法识别芯片平台，请在管理面板中手动选择', { icon: 'error' })
+      setLogPanelVisible(true)
+      return
+    }
+
+    let validity = pathValidity
+    try {
+      validity = await main.detectLogPaths(device.id, pathConfig.paths)
+      setPathValidity(validity)
+    } catch {
+      validity = []
+    }
+    const validityMap: Record<string, boolean> = {}
+    for (const item of validity) {
+      validityMap[item.path] = item.exists && item.readable
+    }
+    const source = selectLogPath(pathConfig, validityMap)
+    if (!source) {
+      notify('所有日志路径均不可用，请在管理面板中配置', { icon: 'error' })
+      setLogPanelVisible(true)
+      return
+    }
+
+    setLogExporting(true)
+    setLogExportResult(null)
+    setLogExportStatus('')
+    try {
+      const result = await main.exportLog(
+        device.id,
+        source,
+        logConfig.outputDir,
+        platform
+      )
+      setLogExportResult(result)
+      if (result.status === 'cancelled') {
+        notify('已取消导出', { icon: 'info' })
+      } else {
+        notify(`导出完成: ${result.outputDir}`, { icon: 'success' })
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notify(`导出失败: ${message}`, { icon: 'error' })
+    } finally {
+      setLogExporting(false)
+    }
   }
 
-  function showMtkLogMenu(e: React.MouseEvent) {
-    e.preventDefault()
-    const pathLabel = (index: '1' | '2', source: string) =>
-      `${mtkLogActive === index ? '✓' : '○'} 路径${index}${
-        mtkLogActive === index ? '（当前使用）' : ''
-      }: ${source}`
-    contextMenu(e, [
-      {
-        label: pathLabel('1', mtkLogSource),
-        click() {
-          switchMtkLogPath('1')
-        },
-      },
-      {
-        label: pathLabel('2', mtkLogSource2),
-        click() {
-          switchMtkLogPath('2')
-        },
-      },
-      {
-        type: 'separator',
-      },
-      {
-        label: '修改路径1',
-        async click() {
-          const source = await LunaModal.prompt('MTKLog路径1', mtkLogSource)
-          if (source) {
-            updateMtkLogSource(source)
-          }
-        },
-      },
-      {
-        label: '修改路径2',
-        async click() {
-          const source = await LunaModal.prompt('MTKLog路径2', mtkLogSource2)
-          if (source) {
-            updateMtkLogSource2(source)
-          }
-        },
-      },
-      {
-        type: 'separator',
-      },
-      {
-        label: `导出路径: ${mtkLogOutputDir}`,
-      },
-      {
-        label: '修改导出路径',
-        async click() {
-          const dir = await LunaModal.prompt('MTKLog导出路径', mtkLogOutputDir)
-          if (dir) {
-            updateMtkLogOutputDir(dir)
-          }
-        },
-      },
-      {
-        type: 'separator',
-      },
-      {
-        label: '恢复默认路径',
-        click() {
-          if (mtkLogActive === '1') {
-            updateMtkLogSource(DEFAULT_MTK_LOG_SOURCE)
-          } else {
-            updateMtkLogSource2(DEFAULT_MTK_LOG_SOURCE)
-          }
-        },
-      },
-    ])
+  function openLogExportDir() {
+    if (logExportResult?.status === 'success') {
+      main.openPath(logExportResult.outputDir)
+    }
+  }
+
+  function cancelLogExport() {
+    main.cancelLogExport()
+  }
+
+  function refreshLogPathValidity() {
+    if (!device || !pathConfig) {
+      return
+    }
+    main
+      .detectLogPaths(device.id, pathConfig.paths)
+      .then(setPathValidity)
+      .catch(() => setPathValidity([]))
   }
 
   async function promptWifiConfig() {
@@ -683,28 +950,10 @@ export default observer(function Shell() {
     ])
   }
 
-  const historyItems = map(history, (command) => {
-    return (
-      <div className={Style.historyItem} key={command}>
-        <button
-          className={Style.historyCommand}
-          title={command}
-          onClick={() => selectedShell.setInput?.(command)}
-        >
-          {command}
-        </button>
-        <button
-          className={Style.historyCopy}
-          onClick={() => {
-            copy(command)
-            notify('Copied', { icon: 'success' })
-          }}
-        >
-          复制
-        </button>
-      </div>
-    )
-  })
+  const searchText = historyQuery.trim().toLowerCase()
+  const historyItems = Array.from(new Set([...favorites, ...history])).filter(
+    (command) => command.toLowerCase().includes(searchText)
+  )
 
   const unlockProgressItems = map(getUnlockAutoFlow(), (item, idx) => {
     const status = unlockStepStatus[item.id] || 'pending'
@@ -723,11 +972,16 @@ export default observer(function Shell() {
   })
 
   return (
-    <div className="panel-with-toolbar">
+    <div
+      className={className('panel-with-toolbar', Style.shell, {
+        [Style.dark]: store.theme === 'dark',
+      })}
+      inert={store.panel !== 'shell'}
+    >
       <div className={className('panel-toolbar', Style.toolbar)}>
         <LunaTab
           className={Style.tabs}
-          height={31}
+          height={42}
           onSelect={(id) => {
             const shell = find(shells, (shell) => shell.id === id)
             if (shell) {
@@ -738,43 +992,202 @@ export default observer(function Shell() {
         >
           {tabItems}
         </LunaTab>
-        <LunaToolbar className={Style.control}>
-          <ToolbarIcon
-            icon="add"
-            title={t('add')}
-            onClick={add}
-            disabled={!device}
-          />
-          <LunaToolbarSpace />
-          <ToolbarIcon
-            icon="list"
-            title={t('shortcut')}
-            onClick={() => setCommandPaletteVisible(true)}
-            disabled={!device}
-          />
-        </LunaToolbar>
+        <button
+          type="button"
+          className={Style.iconButton}
+          title={t('add')}
+          aria-label={t('add')}
+          onClick={add}
+          disabled={!device}
+        >
+          <span className="icon-add" aria-hidden="true" />
+        </button>
       </div>
       <div className={className('panel-body', Style.body)}>
         <div className={Style.workspace}>
           <div className={Style.termContainer}>{terms}</div>
-          <div className={Style.historyPanel}>
-            <div className={Style.historyHeader}>
-              <span>历史记录</span>
-              <div className={Style.historyActions}>
-                <span>{history.length}/{HISTORY_LIMIT}</span>
+          <div className={Style.rail}>
+            <button
+              type="button"
+              className={Style.iconButton}
+              title={t('shellPalette.title') + ' (Ctrl+Shift+P)'}
+              aria-label={t('shellPalette.title')}
+              aria-keyshortcuts="Control+Shift+P"
+              onClick={() => {
+                setHistoryOpen(false)
+                setHistoryQuery('')
+                setCommandPaletteVisible(true)
+              }}
+            >
+              <span className="icon-terminal" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={Style.iconButton}
+              title={t('shellHistory.title')}
+              aria-label={t('shellHistory.title')}
+              aria-expanded={historyOpen}
+              aria-controls={historyOpen ? historyId : undefined}
+              ref={historyButtonRef}
+              onClick={() => (historyOpen ? closeHistory() : setHistoryOpen(true))}
+            >
+              <span className="icon-list" aria-hidden="true" />
+            </button>
+          </div>
+          {historyOpen && (
+            <aside
+              className={Style.historyPanel}
+              id={historyId}
+              aria-labelledby={`${historyId}-title`}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  closeHistory()
+                }
+              }}
+            >
+              <div className={Style.historyHeader}>
+                <h2 id={`${historyId}-title`}>{t('shellHistory.title')}</h2>
+                <span className={Style.historyCount}>
+                  {history.length}/{HISTORY_LIMIT}
+                </span>
                 <button
-                  className={Style.historyClear}
+                  type="button"
+                  className={Style.iconButton}
+                  title={t('shellHistory.clear')}
+                  aria-label={t('shellHistory.clear')}
                   disabled={!history.length}
-                  onClick={clearHistory}
+                  onClick={() => setHistory([])}
                 >
-                  清空
+                  <span className="icon-clear" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={Style.iconButton}
+                  title={t('close')}
+                  aria-label={t('close')}
+                  onClick={closeHistory}
+                >
+                  <span className="icon-collapse" aria-hidden="true" />
                 </button>
               </div>
-            </div>
-            <div className={Style.historyList}>{historyItems}</div>
-          </div>
+              <label className={Style.historySearch}>
+                <input
+                  type="search"
+                  aria-label={t('shellHistory.search')}
+                  placeholder={t('shellHistory.search')}
+                  value={historyQuery}
+                  onChange={(event) => setHistoryQuery(event.currentTarget.value)}
+                  autoFocus
+                />
+              </label>
+              {historyItems.length ? (
+                <ul className={Style.historyList}>
+                  {historyItems.map((command) => (
+                    <li className={Style.historyItem} key={command}>
+                      <button
+                        type="button"
+                        className={Style.historyCommand}
+                        title={command}
+                        disabled={!selectedShell?.sessionId}
+                        onClick={() => {
+                          closeHistory()
+                          selectedShell?.setInput?.(command)
+                        }}
+                      >
+                        <code>{command}</code>
+                      </button>
+                      <div className={Style.historyRowActions}>
+                        <button
+                          type="button"
+                          className={Style.iconButton}
+                          title={t(favorites.includes(command) ? 'shellHistory.unfavorite' : 'shellHistory.favorite')}
+                          aria-label={t('shellHistory.favorite') + ' ' + command}
+                          aria-pressed={favorites.includes(command)}
+                          onClick={() => toggleFavorite(command)}
+                        >
+                          <span className="icon-pin" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className={Style.iconButton}
+                          title={t('copy')}
+                          aria-label={t('copy') + ' ' + command}
+                          onClick={() => void copyHistory(command)}
+                        >
+                          <span className="icon-copy" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          title={t('edit')}
+                          aria-label={t('edit') + ' ' + command}
+                          onClick={() => void editHistory(command)}
+                        >
+                          {t('edit')}
+                        </button>
+                        <button
+                          type="button"
+                          className={Style.iconButton}
+                          title={t('delete')}
+                          aria-label={t('delete') + ' ' + command}
+                          onClick={() => deleteHistory(command)}
+                        >
+                          <span className="icon-delete" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className={Style.historyEmpty}>
+                  {t(
+                    history.length || favorites.length
+                      ? 'shellHistory.noMatches'
+                      : 'shellHistory.empty'
+                  )}
+                </p>
+              )}
+            </aside>
+          )}
         </div>
-        <div className={Style.scriptBar}>{scriptButtons}</div>
+        <div className={Style.scriptBar}>
+          {scriptButtons}
+          {logExportStatus && (
+            <span className={Style.exportStatus} title={logExportStatus}>
+              {logExportStatus}
+            </span>
+          )}
+          {logExporting && (
+            <button
+              className={Style.exportCancelButton}
+              onClick={cancelLogExport}
+            >
+              取消导出
+            </button>
+          )}
+          {logExportResult?.status === 'success' && (
+            <button
+              className={Style.exportOpenButton}
+              onClick={openLogExportDir}
+            >
+              打开目录
+            </button>
+          )}
+        </div>
+        <footer className={Style.status}>
+          <span className={connected ? Style.connected : undefined}>
+            <span className="icon-circle" aria-hidden="true" />
+            {t(connected ? 'shellConnected' : 'deviceNotConnected')}
+          </span>
+          {device && <span title={device.id}>{device.name || device.id}</span>}
+          <span>UID {status?.uid ?? '—'}</span>
+          <span>Root {status ? t(status.root ? 'shellStatus.yes' : 'shellStatus.no') : '—'}</span>
+          <span className={Style.cwd} title={status?.cwd}>
+            <span>{t('shellStatus.cwd')} {status?.cwd || '—'}</span>
+          </span>
+          <span>UTF-8</span>
+        </footer>
         {unlockRemountVisible && (
           <div className={Style.unlockOverlay}>
             <div className={Style.unlockDialog}>
@@ -890,12 +1303,36 @@ export default observer(function Shell() {
             </div>
           </div>
         )}
-        <LunaCommandPalette
-          placeholder={t('typeCmd')}
-          visible={commandPaletteVisible}
-          onClose={() => setCommandPaletteVisible(false)}
-          commands={commands}
-        />
+        {logPanelVisible && (
+          <LogExportPanel
+            deviceName={device ? device.name || device.id : null}
+            platform={platform}
+            detected={detected}
+            autoDetect={logConfig.autoDetect}
+            manualPlatform={logConfig.manualPlatform}
+            pathConfig={pathConfig}
+            pathValidity={pathValidity}
+            outputDir={logConfig.outputDir}
+            onClose={closeLogPanel}
+            onToggleAutoDetect={toggleAutoDetect}
+            onSelectPlatform={selectManualPlatform}
+            onAddPath={addLogPath}
+            onRemovePath={removeLogPath}
+            onModifyPath={modifyLogPath}
+            onSelectPath={selectLogPathManually}
+            onRestoreDefaults={restoreDefaultLogPaths}
+            onSetOutputDir={setLogOutputDir}
+            onRefreshValidity={refreshLogPathValidity}
+            detectedKeyword={detectedKeyword}
+          />
+        )}
+        {commandPaletteVisible && store.panel === 'shell' && (
+          <ShellCommandPalette
+            builtins={getCommands()}
+            onClose={closePalette}
+            onSelect={selectPaletteCommand}
+          />
+        )}
       </div>
     </div>
   )
@@ -907,7 +1344,7 @@ interface IShellScript {
   description: string
   color: string
   commands?: string[][]
-  action?: 'exportMtkLog' | 'connectWifi' | 'unlockRemount'
+  action?: 'exportLog' | 'connectWifi' | 'unlockRemount'
 }
 
 interface IWifiConfig {
@@ -976,11 +1413,11 @@ function getShellScripts(): IShellScript[] {
       action: 'connectWifi',
     },
     {
-      id: 'exportMtkLog',
-      title: '\u5bfc\u51faMTKLog',
+      id: 'exportLog',
+      title: '\u5bfc\u51fa\u65e5\u5fd7',
       color: '#53b1fd',
-      description: 'adb pull <MTKLog路径> <导出路径>',
-      action: 'exportMtkLog',
+      description: 'adb pull <日志路径> <导出路径>',
+      action: 'exportLog',
     },
   ]
 }
@@ -1118,24 +1555,31 @@ function getUnlockRemountSteps(): Array<{
   ]
 }
 
-function loadMtkLogSource() {
-  const source = localStorage.getItem(MTK_LOG_SOURCE_STORAGE_KEY)
-  return source || DEFAULT_MTK_LOG_SOURCE
-}
+function loadLogConfig(): ILogExportConfig {
+  const stored = localStorage.getItem(LOG_EXPORT_CONFIG_STORAGE_KEY)
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored)
+      if (parsed && parsed.platforms?.mtk && parsed.platforms?.unisoc) {
+        return parsed
+      }
+    } catch {
+      // Fall through to migration.
+    }
+  }
 
-function loadMtkLogSource2() {
-  const source = localStorage.getItem(MTK_LOG_SOURCE2_STORAGE_KEY)
-  return source || DEFAULT_MTK_LOG_SOURCE
-}
-
-function loadMtkLogActive(): '1' | '2' {
-  const active = localStorage.getItem(MTK_LOG_ACTIVE_STORAGE_KEY)
-  return active === '2' ? '2' : '1'
-}
-
-function loadMtkLogOutputDir() {
-  const dir = localStorage.getItem(MTK_LOG_OUTPUT_DIR_STORAGE_KEY)
-  return dir || DEFAULT_MTK_LOG_OUTPUT_DIR
+  const legacy = {
+    source: localStorage.getItem(LEGACY_MTK_LOG_KEYS.source),
+    source2: localStorage.getItem(LEGACY_MTK_LOG_KEYS.source2),
+    active: localStorage.getItem(LEGACY_MTK_LOG_KEYS.active) as
+      | '1'
+      | '2'
+      | null,
+    outputDir: localStorage.getItem(LEGACY_MTK_LOG_KEYS.outputDir),
+  }
+  const config = migrateLogExportConfig(legacy)
+  localStorage.setItem(LOG_EXPORT_CONFIG_STORAGE_KEY, JSON.stringify(config))
+  return config
 }
 
 function loadWifi(): IWifiConfig {
@@ -1160,9 +1604,9 @@ function loadWifi(): IWifiConfig {
   }
 }
 
-function loadHistory() {
+function loadHistory(key: string): string[] {
   try {
-    const value = localStorage.getItem(HISTORY_STORAGE_KEY)
+    const value = localStorage.getItem(key)
     if (!value) {
       return []
     }
@@ -1172,17 +1616,19 @@ function loadHistory() {
       return []
     }
 
-    return filter(history, (item) => typeof item === 'string').slice(
-      0,
-      HISTORY_LIMIT
-    )
+    const commands = Array.from(new Set(history.filter(isShellCommand)))
+    return key === HISTORY_STORAGE_KEY ? commands.slice(0, HISTORY_LIMIT) : commands
   } catch {
     return []
   }
 }
 
-function saveHistory(history: string[]) {
-  localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history))
+function saveHistory(key: string, history: string[]) {
+  if (history.length) {
+    localStorage.setItem(key, JSON.stringify(history))
+  } else {
+    localStorage.removeItem(key)
+  }
 }
 
 function getCommands() {
