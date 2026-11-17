@@ -1,0 +1,9 @@
+{
+  "ro.board.platform": "kona",
+  "ro.hardware": "qcom",
+  "ro.soc.manufacturer": "Qualcomm",
+  "ro.product.board": "kona",
+  "ro.product.manufacturer": "OnePlus",
+  "ro.product.model": "IN2010",
+  "ro.build.version.release": "12"
+}

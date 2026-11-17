@@ -1,0 +1,9 @@
+{
+  "ro.board.platform": "mt8781",
+  "ro.hardware": "mt8781",
+  "ro.soc.manufacturer": "MediaTek",
+  "ro.product.board": "mt8781",
+  "ro.product.manufacturer": "alps",
+  "ro.product.model": "TB8781P4_64",
+  "ro.build.version.release": "15"
+}

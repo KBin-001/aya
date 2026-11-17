@@ -1,0 +1,9 @@
+{
+  "ro.board.platform": "ums9230",
+  "ro.hardware": "ums9230_1h10",
+  "ro.soc.manufacturer": "unisoc",
+  "ro.product.board": "ums9230",
+  "ro.product.manufacturer": "SPRD",
+  "ro.product.model": "UMS9230",
+  "ro.build.version.release": "14"
+}
