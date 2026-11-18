@@ -3,6 +3,7 @@ import { handleEvent } from 'share/main/lib/util'
 import * as window from 'share/main/lib/window'
 import { getAdbPath, spawnAdb } from './base'
 import { DEFAULT_LOG_OUTPUT_DIR, matchPlatform } from 'common/logexport'
+import type { LogPlatform } from 'common/logexport'
 import fs from 'fs-extra'
 import path from 'node:path'
 import childProcess from 'node:child_process'
@@ -13,6 +14,7 @@ import {
   IpcCancelLogExport,
   IpcDetectLogPaths,
   IpcDetectPlatform,
+  IpcDiscoverLogPaths,
   IpcExportLog,
   ILogExportResult,
   ILogPathValidity,
@@ -79,6 +81,55 @@ async function probePath(
     return { path, exists: false, readable: false }
   }
   return { path, exists: true, readable: false }
+}
+
+// Where each vendor writes its logs, and the user-accessible roots to scan for
+// those directory names. `/storage/emulated/0` is the canonical spelling,
+// `/sdcard` its usual symlink; both are scanned because some builds lack the
+// symlink.
+const LOG_DIR_PARENTS = ['/storage/emulated/0', '/sdcard']
+const LOG_DIR_KEYWORDS: Record<LogPlatform, string[]> = {
+  mtk: ['debuglogger', 'mtklog'],
+  unisoc: ['ylog'],
+}
+
+/**
+ * Discover where the device actually writes its logs by scanning the storage
+ * roots for the platform's log-directory names. This finds the real path even
+ * when the configured candidates are stale, e.g. a MediaTek build that uses
+ * /storage/emulated/0/debuglogger instead of /sdcard/debuglogger.
+ */
+const discoverLogPaths: IpcDiscoverLogPaths = async function (
+  deviceId,
+  platform
+) {
+  const keywords = LOG_DIR_KEYWORDS[platform]
+  const found: string[] = []
+  const seen = new Set<string>()
+  for (const parent of LOG_DIR_PARENTS) {
+    const listing = await spawnAdb([
+      '-s',
+      deviceId,
+      'shell',
+      'ls',
+      '-1',
+      parent,
+    ])
+    if (listing.code !== 0) {
+      continue
+    }
+    for (const line of listing.stdout.split('\n')) {
+      const name = line.trim()
+      if (!name || seen.has(name)) {
+        continue
+      }
+      if (keywords.some((keyword) => name.toLowerCase().includes(keyword))) {
+        seen.add(name)
+        found.push(`${parent}/${name}`)
+      }
+    }
+  }
+  return found
 }
 
 /**
@@ -208,6 +259,7 @@ export function init(c: Client) {
 
   handleEvent('detectPlatform', detectPlatform)
   handleEvent('detectLogPaths', detectLogPaths)
+  handleEvent('discoverLogPaths', discoverLogPaths)
   handleEvent('exportLog', exportLog)
   handleEvent('cancelLogExport', cancelLogExport)
 }

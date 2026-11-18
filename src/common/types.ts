@@ -131,6 +131,11 @@ export type IpcDetectLogPaths = (
   paths: string[]
 ) => Promise<ILogPathValidity[]>
 
+export type IpcDiscoverLogPaths = (
+  deviceId: string,
+  platform: LogPlatform
+) => Promise<string[]>
+
 export interface ILogExportProgress {
   message: string
 }

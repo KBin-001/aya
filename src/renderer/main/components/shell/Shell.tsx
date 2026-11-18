@@ -167,22 +167,34 @@ export default observer(function Shell() {
     }
   }, [device?.id])
 
-  // Re-probe the current platform's candidate paths.
+  // Re-probe the current platform's candidate paths, discovering the real log
+  // directory on the device and adopting any valid discovered path.
   useEffect(() => {
     if (!device || platform === 'unknown' || !pathConfig) {
       setPathValidity([])
       return
     }
-    if (pathConfig.paths.length === 0) {
-      setPathValidity([])
-      return
-    }
+    const target = platform
     let cancelled = false
-    main
-      .detectLogPaths(device.id, pathConfig.paths)
-      .then((validity) => {
-        if (!cancelled) {
-          setPathValidity(validity)
+    collectLogValidity(device.id, target)
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+        setPathValidity(result.validity)
+        const adopt = result.discovered.filter(
+          (path) =>
+            !pathConfig.paths.includes(path) &&
+            result.validity.some(
+              (item) => item.path === path && item.exists && item.readable
+            )
+        )
+        if (adopt.length) {
+          updateLogPathConfig(target, (pc) => ({
+            ...pc,
+            paths: [...pc.paths, ...adopt],
+            selected: pc.selected ?? adopt[0],
+          }))
         }
       })
       .catch(() => {
@@ -835,20 +847,24 @@ export default observer(function Shell() {
       return
     }
 
-    let validity = pathValidity
-    try {
-      validity = await main.detectLogPaths(device.id, pathConfig.paths)
-      setPathValidity(validity)
-    } catch {
-      validity = []
-    }
+    const collected = await collectLogValidity(device.id, platform).catch(
+      () => null
+    )
+    const validity = collected?.validity ?? []
+    setPathValidity(validity)
     const validityMap: Record<string, boolean> = {}
     for (const item of validity) {
       validityMap[item.path] = item.exists && item.readable
     }
-    const source = selectLogPath(pathConfig, validityMap)
+    const source = selectLogPath(
+      {
+        paths: collected?.paths ?? pathConfig.paths,
+        selected: pathConfig.selected,
+      },
+      validityMap
+    )
     if (!source) {
-      notify('所有日志路径均不可用，请在管理面板中配置', { icon: 'error' })
+      notify('未找到可用的日志路径，请在管理面板中配置', { icon: 'error' })
       setLogPanelVisible(true)
       return
     }
@@ -887,13 +903,23 @@ export default observer(function Shell() {
     main.cancelLogExport()
   }
 
+  async function collectLogValidity(deviceId: string, target: LogPlatform) {
+    const discovered = await main
+      .discoverLogPaths(deviceId, target)
+      .catch(() => [] as string[])
+    const merged = [
+      ...new Set([...logConfig.platforms[target].paths, ...discovered]),
+    ]
+    const validity = await main.detectLogPaths(deviceId, merged)
+    return { paths: merged, discovered, validity }
+  }
+
   function refreshLogPathValidity() {
-    if (!device || !pathConfig) {
+    if (!device || platform === 'unknown' || !pathConfig) {
       return
     }
-    main
-      .detectLogPaths(device.id, pathConfig.paths)
-      .then(setPathValidity)
+    collectLogValidity(device.id, platform)
+      .then((result) => setPathValidity(result.validity))
       .catch(() => setPathValidity([]))
   }
 
