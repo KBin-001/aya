@@ -21,6 +21,7 @@ core boundary visible instead of losing it in line breaks.
 | --- | --- |
 | `mtk-tb8781p4` | **Real capture**, taken straight from the device. MediaTek MT8781 (`vext_tb8781p4_64_wifi`, `ro.hardware=mt8781`, arm64-v8a, Android 17 / SDK 37), 8 cores. |
 | `mtk-sysfs-reference` | **Synthesised, not captured.** The thermal zone globs, the `power_supply` node and the two `devfreq` nodes are written to the shapes those files have on MediaTek hardware. On the reference device above every one of them is permission-denied to the shell user, so none of these could be captured with `adb shell`; they exist to pin the parsers, not to prove what a device reports. The DDR sample treats the `mtk-dvfsrc` DVFS-resource node as the memory clock, which is an inference and not a measured fact. |
+| `ums9370-sysfs-reference` | **Real capture**, taken from the device's `scene-frequency` devfreq node. Spreadtrum/Unisoc UMS9370 (`ro.board.platform=ums9370`), which drives the DDR clock through `sprd-governor` and publishes it already in MHz rather than Hz. |
 | `qcom-reference` | **Synthesised, not captured.** Shaped after a Qualcomm dump (`AC powered`, `current now`, `POWER_AMPLIFIER` / `BCL_VOLTAGE` zones) so the parsers are not only exercised against MediaTek output. Replace it with a real capture as soon as a Qualcomm device is on hand. |
 
 ## Adding a device

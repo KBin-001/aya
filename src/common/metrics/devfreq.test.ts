@@ -28,6 +28,12 @@ describe('selectDevfreqNode', () => {
       'ddr',
       'mtk-emi',
     ],
+    [
+      'the Spreadtrum scene-frequency node',
+      ['24000000.gpu', 'dpu', 'scene-frequency'],
+      'ddr',
+      'scene-frequency',
+    ],
   ])('finds %s', (_case, nodes, kind, expected) => {
     expect(selectDevfreqNode(nodes as string[], kind as any)).toBe(expected)
   })
@@ -60,6 +66,24 @@ describe('parseDevfreqReadings', () => {
         frequencyMhz: 4266,
         availableMhz: [1066, 1600, 2133, 2736, 3600, 4266],
         governor: 'simple_ondemand',
+        loadPct: null,
+      },
+    })
+  })
+
+  it('reads a Spreadtrum scene-frequency node that publishes MHz directly', () => {
+    // Spreadtrum's sprd-governor reports the DDR clock already in MHz, not the
+    // Hz every other devfreq node uses.
+    expect(
+      parseDevfreqReadings(
+        readFixture('ums9370-sysfs-reference', 'devfreq-scene-frequency.txt'),
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        frequencyMhz: 768,
+        availableMhz: [384, 768, 1066, 1246, 1536, 2133, 2492],
+        governor: 'sprd-governor',
         loadPct: null,
       },
     })

@@ -20,6 +20,9 @@ const DDR_NODE_PATTERNS = [
   /emi/i,
   /memlat/i,
   /dvfsrc/i,
+  // Spreadtrum/Unisoc drives the DDR clock through its `scene-frequency` node
+  // (the sprd-ddr-dvfs driver), which is not named after memory at all.
+  /scene-frequency/i,
   // Generic bandwidth last: `cpubw` is a CPU cache/DDR interconnect node whose
   // clock is not the memory clock, so an explicit ddr node must win over it.
   /bw/i,
@@ -62,22 +65,31 @@ export interface IDevfreqReading {
   loadPct: number | null
 }
 
-function hzToMhz(value: number) {
-  return Math.round(value / 1e6)
-}
+/**
+ * The kernel's devfreq interface reports clocks in Hz, but Spreadtrum's
+ * `scene-frequency` node publishes the DDR clock already in MHz - its custom
+ * `sprd-governor` does not follow the Hz convention. The two are told apart by
+ * magnitude: no real memory or GPU clock runs below one megahertz, so a value
+ * under 1e6 is already a megahertz reading rather than a sub-megahertz clock.
+ */
+const HZ_VS_MHZ_FLOOR = 1e6
 
-function readHz(raw: string | undefined) {
+function readFrequencyMhz(raw: string | undefined): number | null {
   if (!raw) {
     return null
   }
   const value = toNum(raw)
-  return Number.isFinite(value) && value > 0 ? value : null
+  if (!Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  return value < HZ_VS_MHZ_FLOOR ? value : Math.round(value / 1e6)
 }
 
 /**
  * Parse one devfreq node's fields.
  *
- * Frequencies are reported in Hz by the kernel and shown in MHz. A node that
+ * Frequencies are reported in Hz by the kernel and shown in MHz, except by a
+ * few nodes (Spreadtrum scene-frequency) that already publish MHz. A node that
  * publishes no frequency is a parse failure rather than a reading of zero, and
  * table entries that do not parse are dropped instead of poisoning the list.
  */
@@ -85,16 +97,15 @@ export function parseDevfreqReadings(
   nodeText: string,
 ): ParseResult<IDevfreqReading> {
   const fields = parseKeyedLines(nodeText)
-  const frequency = readHz(fields.cur_freq)
-  if (frequency === null) {
+  const frequencyMhz = readFrequencyMhz(fields.cur_freq)
+  if (frequencyMhz === null) {
     return fail('the devfreq node reported no readable cur_freq')
   }
 
   const availableMhz = (fields.available_frequencies || '')
     .split(/\s+/)
-    .map((entry) => readHz(entry))
+    .map((entry) => readFrequencyMhz(entry))
     .filter((entry): entry is number => entry !== null)
-    .map(hzToMhz)
     .filter((entry, index, all) => all.indexOf(entry) === index)
     .sort((left, right) => left - right)
 
@@ -106,7 +117,7 @@ export function parseDevfreqReadings(
   const governor = trim(fields.governor || '')
 
   return ok({
-    frequencyMhz: hzToMhz(frequency),
+    frequencyMhz,
     availableMhz,
     governor: governor || null,
     // A load above 100 is a raw counter, not a percentage: drop it rather than

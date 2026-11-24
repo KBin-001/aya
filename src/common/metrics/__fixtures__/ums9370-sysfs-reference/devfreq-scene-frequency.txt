@@ -1,0 +1,4 @@
+cur_freq|768
+available_frequencies|384 768 1066 1246 1536 2133 2492
+governor|sprd-governor
+load|
