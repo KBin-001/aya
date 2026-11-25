@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import types from 'licia/types'
 import Emitter from 'licia/Emitter'
 import uniqId from 'licia/uniqId'
@@ -12,6 +13,17 @@ import {
 } from 'common/types'
 
 let client: Client
+
+// Keep Android's default interactive setup and report the effective UID and
+// path at each primary prompt. Older transports still use the stock shell.
+const shellStartup = [
+  "ENV=/proc/self/fd/3 exec /system/bin/sh -il 3<<'AYA_SHELL'",
+  "unset ENV",
+  "[ ! -r /system/etc/mkshrc ] || . /system/etc/mkshrc",
+  "PS1='$(case \"$PWD\" in *[[:cntrl:]]*) aya_cwd=;; *) aya_cwd=$PWD;; esac; printf \"\\033]633;AYA;%s;%s\\007\" \"${EUID:-${USER_ID:-$(id -u)}}\" \"$aya_cwd\")'\"$PS1\"",
+  'exec 3<&-',
+  'AYA_SHELL',
+].join('\n')
 
 class ShellProtocol {
   static STDIN = 0
@@ -82,6 +94,8 @@ class AdbPty extends Emitter {
   private connection: any
   private useV2 = true
   private readBuffer = Buffer.alloc(0)
+  private readonly stdoutDecoder = new StringDecoder('utf8')
+  private readonly stderrDecoder = new StringDecoder('utf8')
   private killed = false
   constructor(connection: any) {
     super()
@@ -92,7 +106,7 @@ class AdbPty extends Emitter {
     const { connection } = this
 
     this.useV2 = useV2
-    const protocol = useV2 ? 'shell,v2:' : 'shell:'
+    const protocol = useV2 ? 'shell,v2,pty:' + shellStartup : 'shell:'
     connection.write(Protocol.encodeData(Buffer.from(protocol)))
     const result = await connection.parser.readAscii(4)
     if (result !== Protocol.OKAY) {
@@ -117,7 +131,9 @@ class AdbPty extends Emitter {
           for (let i = 0, len = packets.length; i < len; i++) {
             const { id, data } = packets[i]
             if (id === ShellProtocol.STDOUT || id === ShellProtocol.STDERR) {
-              this.emit('data', data.toString('utf8'))
+              const decoder =
+                id === ShellProtocol.STDOUT ? this.stdoutDecoder : this.stderrDecoder
+              this.emit('data', decoder.write(data))
             } else if (id === ShellProtocol.EXIT) {
               this.kill()
             }
@@ -129,7 +145,7 @@ class AdbPty extends Emitter {
       socket.on('readable', () => {
         const buf = socket.read()
         if (buf) {
-          this.emit('data', buf.toString('utf8'))
+          this.emit('data', this.stdoutDecoder.write(buf))
         }
       })
     }
@@ -209,6 +225,7 @@ const createShell: IpcCreateShell = async function (deviceId) {
   })
   adbPty.on('close', () => {
     delete ptys[sessionId]
+    window.sendTo('main', 'shellClose', sessionId)
   })
   ptys[sessionId] = adbPty
 

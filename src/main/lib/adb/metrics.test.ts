@@ -23,21 +23,35 @@ function fakeShell(outputs: Record<string, string>) {
         const core = /cpu(\d+)/.exec(command)?.[1]
         return outputs['freq:' + core] ?? ''
       }
-      if (command.includes('ls /sys/class/devfreq')) {
+      if (command.includes('ls -1 /sys/class/devfreq')) {
         return outputs['probe:devfreq'] ?? ''
+      }
+      if (command === 'getprop ro.debuggable') {
+        return outputs.debuggable ?? '0'
       }
       if (command.includes('max_brightness')) {
         return outputs['probe:backlight-max'] ?? ''
       }
       if (command.includes('/sys/class/devfreq/')) {
-        return command.includes('mali') || command.includes('gpu')
-          ? (outputs.gpu ?? '')
-          : (outputs.ddr ?? '')
+        const kind =
+          command.includes('mali') || command.includes('gpu') ? 'gpu' : 'ddr'
+        const key = command.startsWith('su 0 ') ? 'su:' + kind : kind
+        const reading = outputs[key] ?? ''
+        if (
+          command.includes('/sys/module/ged/parameters/gpu_loading') &&
+          outputs.ged !== undefined
+        ) {
+          return reading.replace(/^load\|$/m, 'load|' + outputs.ged)
+        }
+        return reading
       }
       if (command.includes('dumpsys display')) {
         return outputs.display ?? ''
       }
       if (command.includes('screen_brightness')) {
+        return outputs.brightness ?? ''
+      }
+      if (command.includes('/sys/class/backlight/')) {
         return outputs.brightness ?? ''
       }
       if (command.includes('thermal_zone*/type')) {
@@ -114,7 +128,7 @@ function healthyOutputs(): Record<string, string> {
     uptime: '12345.67 98765.43',
     top: topLine,
     fps: 'flips=9241',
-    'probe:devfreq': 'mtk-dvfsrc-devfreq\n13000000.mali',
+    'probe:devfreq': '13000000.mali  mtk-dvfsrc-devfreq',
     'probe:backlight-max': '',
     ddr: ddrNode,
     gpu: gpuNode,
@@ -180,6 +194,27 @@ describe('collectMetrics', () => {
     expect(snapshot.ddr.frequencyMhz).toBeNull()
   })
 
+  it('reads the Spreadtrum scene-frequency node as the DDR clock', async () => {
+    // A Unisoc board lists `scene-frequency` (sprd-ddr-dvfs) among its devfreq
+    // nodes, and that node reports the clock already in MHz.
+    const outputs = healthyOutputs()
+    outputs['probe:devfreq'] = '24000000.gpu  scene-frequency  dpu  isp-dvfs'
+    outputs.ddr = readFixture(
+      'ums9370-sysfs-reference',
+      'devfreq-scene-frequency.txt',
+    )
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.ddr).toMatchObject({
+      status: 'supported',
+      source: 'scene-frequency',
+      frequencyMhz: 768,
+      availableMhz: [384, 768, 1066, 1246, 1536, 2133, 2492],
+    })
+  })
+
   it('says a device exposes no GPU node rather than reporting 0 MHz', async () => {
     const outputs = healthyOutputs()
     outputs['probe:devfreq'] = 'mtk-dvfsrc-devfreq'
@@ -190,6 +225,53 @@ describe('collectMetrics', () => {
     expect(snapshot.gpu.status).toBe('unsupported')
     expect(snapshot.gpu.reason).toContain('no GPU')
     expect(snapshot.gpu.frequencyMhz).toBeNull()
+  })
+
+  it('reuses su for devfreq reads only when the debug build needs it', async () => {
+    const outputs = healthyOutputs()
+    outputs.debuggable = '1'
+    outputs.ddr = ''
+    outputs['su:ddr'] = ddrNode
+    const shell = fakeShell(outputs)
+    const cache = new Map()
+
+    const snapshot = await collectMetrics('debug-device', shell.run, cache)
+    expect(snapshot.ddr).toMatchObject({
+      status: 'supported',
+      source: 'mtk-dvfsrc-devfreq',
+    })
+    expect(snapshot.gpu).toMatchObject({
+      status: 'supported',
+      source: '13000000.mali',
+    })
+
+    await collectMetrics('debug-device', shell.run, cache)
+    const devfreqCommands = shell.calls
+      .at(-1)!
+      .filter((command) => command.includes('/sys/class/devfreq/'))
+    expect(devfreqCommands).toHaveLength(2)
+    expect(
+      devfreqCommands.filter((command) => command.startsWith('su 0 ')),
+    ).toEqual([
+      expect.stringContaining('/sys/class/devfreq/mtk-dvfsrc-devfreq/'),
+    ])
+  })
+
+  it('reads MediaTek GED load when the GPU devfreq load file is missing', async () => {
+    const outputs = healthyOutputs()
+    outputs.gpu = gpuNode.replace(/^load\|.*$/m, 'load|')
+    outputs.ged = '0'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+    expect(snapshot.gpu.loadPct).toBe(0)
+    expect(
+      shell.calls
+        .flat()
+        .filter((command) =>
+          command.includes('/sys/module/ged/parameters/gpu_loading'),
+        ),
+    ).toEqual([expect.stringContaining('/sys/class/devfreq/13000000.mali/')])
   })
 
   it('does not read a node it proved unreadable at probe time', async () => {
@@ -232,7 +314,10 @@ describe('collectMetrics', () => {
     expect(dropped.gpu.throttled).toBe(true)
   })
 
-  it('turns the brightness setting into a share when the range is known', async () => {
+  it('turns the backlight node level into a share of its range', async () => {
+    // The range is read from /sys/class/backlight/*/max_brightness and the
+    // level from the sibling brightness node, so the two are always the same
+    // scale and the percentage is honest.
     const outputs = healthyOutputs()
     outputs['probe:backlight-max'] = '255'
     const shell = fakeShell(outputs)
@@ -241,6 +326,22 @@ describe('collectMetrics', () => {
 
     expect(snapshot.display.brightnessPct).toBe(40.4)
     expect(snapshot.display.brightnessMax).toBe(255)
+  })
+
+  it('reads the level and range from the same scale on a 4095-step panel', async () => {
+    // A Spreadtrum panel is 0-4095, while the Android screen_brightness setting
+    // is 0-255: reading the setting against this max would report 192/4095 ≈ 5%
+    // where the panel really sits at 3074/4095 ≈ 75%.
+    const outputs = healthyOutputs()
+    outputs['probe:backlight-max'] = '4095'
+    outputs.brightness = '3074'
+    const shell = fakeShell(outputs)
+
+    const snapshot = await collectMetrics('device', shell.run, new Map())
+
+    expect(snapshot.display.brightnessPct).toBe(75.1)
+    expect(snapshot.display.brightnessMax).toBe(4095)
+    expect(snapshot.display.brightnessRaw).toBe(3074)
   })
 
   it('reads the cpu, memory, uptime, fps and top package it always has', async () => {

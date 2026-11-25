@@ -2,12 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import LunaPerformanceMonitor from 'luna-performance-monitor/react'
 import { orange6, orange6Dark } from 'common/theme'
 import { t } from 'common/util'
-import { IMetricsSnapshot } from 'common/metrics'
+import { IMetricsSnapshot, IThermalZone } from 'common/metrics'
 import store from '../../store'
 import Style from './Performance.module.scss'
 
 /** Rows shown before the list has to be expanded. */
 const COLLAPSED_ZONE_ROWS = 12
+
+export function invalidZone({ name, temperatureC }: IThermalZone) {
+  return (
+    !Number.isFinite(temperatureC) ||
+    (name.toUpperCase() === 'USB_PORT' && temperatureC === -127)
+  )
+}
 
 interface IThermalSectionProps {
   metricsRef: React.MutableRefObject<IMetricsSnapshot | null>
@@ -73,7 +80,10 @@ export default function ThermalSection(props: IThermalSectionProps) {
         <div className={Style.zoneList}>
           {(expanded ? zones : zones.slice(0, COLLAPSED_ZONE_ROWS)).map(
             (zone, index) => (
-              <div
+              <button
+                type="button"
+                disabled={invalidZone(zone)}
+                aria-pressed={zone === activeZone}
                 key={`${zone.name}-${index}`}
                 className={
                   index === zones.indexOf(activeZone)
@@ -84,20 +94,24 @@ export default function ThermalSection(props: IThermalSectionProps) {
               >
                 <span className={Style.zoneName}>{zone.name}</span>
                 <span className={Style.zoneValue}>
-                  {zone.temperatureC.toFixed(1)}°C
+                  {invalidZone(zone)
+                    ? t('performancePage.invalid')
+                    : zone.temperatureC.toFixed(1) + '°C'}
                 </span>
-              </div>
+              </button>
             ),
           )}
           {zones.length > COLLAPSED_ZONE_ROWS ? (
-            <div
+            <button
+              type="button"
+              aria-expanded={expanded}
               className={Style.zoneToggle}
               onClick={() => setExpanded(!expanded)}
             >
               {expanded
                 ? t('collapseZones')
                 : `${t('showAllZones')} (${zones.length})`}
-            </div>
+            </button>
           ) : null}
         </div>
       ) : (
@@ -119,7 +133,7 @@ export default function ThermalSection(props: IThermalSectionProps) {
         </div>
       ) : null}
 
-      {hasZones ? (
+      {activeZone && !invalidZone(activeZone) ? (
         <LunaPerformanceMonitor
           title={`${t('thermal')} ${activeZone ? activeZone.name : ''}`}
           data={zoneData}

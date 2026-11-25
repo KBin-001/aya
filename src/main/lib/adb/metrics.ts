@@ -51,9 +51,21 @@ const THERMAL_ZONE_TYPES =
 const THERMAL_ZONE_TEMPS =
   'cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
 
-/** One line per devfreq field, for the same reason as the power supply scan. */
-function devfreqScan(node: string): string {
-  return `for f in cur_freq available_frequencies governor load; do echo "$f|$(cat /sys/class/devfreq/${node}/$f 2>/dev/null)"; done`
+type DevfreqAccess = 'shell' | 'su'
+
+/** Use the same devfreq read command for probing and sampling. */
+function devfreqScan(
+  node: string,
+  access: DevfreqAccess = 'shell',
+  kind?: 'gpu',
+): string {
+  // MediaTek Mali can publish GPU load through GED instead of devfreq.
+  const fallback =
+    kind === 'gpu'
+      ? ' || { [ "$f" = load ] && cat /sys/module/ged/parameters/gpu_loading 2>/dev/null; }'
+      : ''
+  const scan = `for f in cur_freq available_frequencies governor load; do echo "$f|$(cat "/sys/class/devfreq/${node}/$f" 2>/dev/null${fallback})"; done`
+  return access === 'su' ? `su 0 sh -c '${scan}' 2>/dev/null` : scan
 }
 
 /** One field per line, so the parser keeps the boundaries between files. */
@@ -78,9 +90,9 @@ interface IDeviceProbe {
   ddrNode: string | null
   /** devfreq node carrying the GPU clock, when the device has one. */
   gpuNode: string | null
-  /** The DDR / GPU nodes answered a read. Unreadable nodes cost a tick each. */
-  ddrReadable: boolean
-  gpuReadable: boolean
+  /** Unreadable nodes are skipped on subsequent samples. */
+  ddrAccess?: DevfreqAccess
+  gpuAccess?: DevfreqAccess
   /** Range of the backlight scale, when a backlight node publishes one. */
   brightnessMax: number | null
 }
@@ -140,21 +152,22 @@ async function probeDevice(runShell: RunShell): Promise<IDeviceProbe> {
     powerSupplyFields,
     devfreqNodes,
     backlightMax,
+    debuggable,
   ] = await runShell([
     'cat /proc/stat',
     'ls /sys/class/thermal 2>/dev/null',
     THERMAL_ZONE_TEMPS,
     'ls /sys/class/power_supply/battery 2>/dev/null',
     POWER_SUPPLY_SCAN,
-    'ls /sys/class/devfreq 2>/dev/null',
+    'ls -1 /sys/class/devfreq 2>/dev/null',
     'cat /sys/class/backlight/*/max_brightness 2>/dev/null',
+    'getprop ro.debuggable',
   ])
 
   const cpus = parseCpuStat(stat)
   const nodeNames = (devfreqNodes || '')
-    .split('\n')
-    .map((node) => trim(node))
-    .filter(Boolean)
+    .split(/\s+/)
+    .filter((node) => /^[\w.-]+$/.test(node))
   const ddrNode = selectDevfreqNode(nodeNames, 'ddr')
   const gpuNode = selectDevfreqNode(nodeNames, 'gpu')
 
@@ -166,12 +179,22 @@ async function probeDevice(runShell: RunShell): Promise<IDeviceProbe> {
   const verifications = nodesToVerify.length
     ? await runShell(nodesToVerify.map((node) => devfreqScan(node)))
     : []
-  const verified: Record<string, boolean> = {}
-  nodesToVerify.forEach((node, index) => {
-    verified[node] = parseDevfreqReadings(verifications[index] || '').ok
+  const verified = new Map<string, DevfreqAccess>()
+  const unreadable = nodesToVerify.filter((node, index) => {
+    if (!parseDevfreqReadings(verifications[index] || '').ok) return true
+    verified.set(node, 'shell')
+    return false
   })
-  const ddrReadable = ddrNode ? verified[ddrNode] === true : false
-  const gpuReadable = gpuNode ? verified[gpuNode] === true : false
+
+  if (trim(debuggable || '') === '1' && unreadable.length) {
+    const privileged = await runShell(
+      unreadable.map((node) => devfreqScan(node, 'su')),
+    )
+    unreadable.forEach((node, index) => {
+      if (parseDevfreqReadings(privileged[index] || '').ok)
+        verified.set(node, 'su')
+    })
+  }
   // Several backlight nodes would print several maxima on one line, which is
   // not a range; only a single number is usable.
   const backlightMaxText = trim(backlightMax || '')
@@ -189,8 +212,8 @@ async function probeDevice(runShell: RunShell): Promise<IDeviceProbe> {
     powerSupplyReadable: parsePowerSupplyBattery(powerSupplyFields || '').ok,
     ddrNode,
     gpuNode,
-    ddrReadable,
-    gpuReadable,
+    ddrAccess: ddrNode ? verified.get(ddrNode) : undefined,
+    gpuAccess: gpuNode ? verified.get(gpuNode) : undefined,
     brightnessMax,
   }
 }
@@ -231,11 +254,17 @@ function buildReads(probe: IDeviceProbe): IRead[] {
     reads.push({ key: 'battery:dumpsys', command: 'dumpsys battery' })
   }
 
-  if (probe.ddrReadable && probe.ddrNode) {
-    reads.push({ key: 'ddr', command: devfreqScan(probe.ddrNode) })
+  if (probe.ddrAccess && probe.ddrNode) {
+    reads.push({
+      key: 'ddr',
+      command: devfreqScan(probe.ddrNode, probe.ddrAccess),
+    })
   }
-  if (probe.gpuReadable && probe.gpuNode) {
-    reads.push({ key: 'gpu', command: devfreqScan(probe.gpuNode) })
+  if (probe.gpuAccess && probe.gpuNode) {
+    reads.push({
+      key: 'gpu',
+      command: devfreqScan(probe.gpuNode, probe.gpuAccess, 'gpu'),
+    })
   }
 
   // The panel state line and the device info line come back together, grepped
@@ -244,9 +273,17 @@ function buildReads(probe: IDeviceProbe): IRead[] {
     key: 'display',
     command: 'dumpsys display | grep -m2 -E "DisplayDeviceInfo|Display State="',
   })
+  // The kernel backlight node reports the level and its range in the same
+  // units, so the percentage is read from it. The Android `screen_brightness`
+  // setting is a 0-255 software level that does not match a 0-4095 panel (which
+  // would show 5% where the panel is really at 75%), so it is only a fallback
+  // for devices that publish no backlight node at all.
   reads.push({
     key: 'brightness',
-    command: 'settings get system screen_brightness',
+    command:
+      probe.brightnessMax === null
+        ? 'settings get system screen_brightness'
+        : 'cat /sys/class/backlight/*/brightness 2>/dev/null',
   })
 
   reads.push({ key: 'memory', command: 'cat /proc/meminfo' })
@@ -405,11 +442,11 @@ type DevfreqOutcome =
  */
 function readDevfreqSource(
   node: string | null,
-  readable: boolean,
+  access: DevfreqAccess | undefined,
   nodeText: string,
   domain: 'DDR' | 'GPU',
 ): DevfreqOutcome {
-  if (node && readable) {
+  if (node && access) {
     const reading = parseDevfreqReadings(nodeText)
     if (reading.ok) {
       return { status: 'supported', reading: reading.value }
@@ -443,7 +480,7 @@ function readDdr(
 ): IDdrReading {
   const outcome = readDevfreqSource(
     probe.ddrNode,
-    probe.ddrReadable,
+    probe.ddrAccess,
     outputs.ddr || '',
     'DDR',
   )
@@ -473,7 +510,7 @@ function readGpu(
 ): IGpuReading {
   const outcome = readDevfreqSource(
     probe.gpuNode,
-    probe.gpuReadable,
+    probe.gpuAccess,
     outputs.gpu || '',
     'GPU',
   )
@@ -699,8 +736,8 @@ export async function collectMetrics(
   // tick probes again and brings the fallback command back with it.
   if (
     (battery.status === 'error' && probe.powerSupplyReadable) ||
-    (ddr.status === 'error' && probe.ddrReadable) ||
-    (gpu.status === 'error' && probe.gpuReadable)
+    (ddr.status === 'error' && probe.ddrAccess) ||
+    (gpu.status === 'error' && probe.gpuAccess)
   ) {
     probeCache.delete(deviceId)
   }

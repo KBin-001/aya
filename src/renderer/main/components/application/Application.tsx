@@ -28,6 +28,7 @@ import clone from 'licia/clone'
 import LunaModal from 'luna-modal'
 import findIdx from 'licia/findIdx'
 import PackageInfoModal from './PackageInfoModal'
+import ScenePanel from './ScenePanel'
 import { IPackageInfo } from 'common/types'
 import defaultIcon from '../../../assets/default-icon.png'
 import contextMenu from 'share/renderer/lib/contextMenu'
@@ -70,36 +71,43 @@ export default observer(function Application() {
     if (!packageName) {
       setPackageInfos([])
       setIsLoading(true)
-      const packages = await main.getPackages(
-        device.id,
-        store.application.sysPackage
-      )
-      const chunks = chunk(packages, 50)
-      let packageInfos: any[] = []
-      for (let i = 0, len = chunks.length; i < len; i++) {
-        const chunk = chunks[i]
-        packageInfos = concat(
-          packageInfos,
-          await main.getPackageInfos(device.id, chunk)
+      try {
+        const packages = await main.getPackages(
+          device.id,
+          store.application.sysPackage
         )
-        iconsRef.current = map(packageInfos, (info) => {
-          const style: any = {
-            borderRadius: '20%',
-          }
-          if (!info.enabled) {
-            style.filter = 'grayscale(100%)'
-          }
+        const chunks = chunk(packages, 50)
+        let packageInfos: any[] = []
+        for (let i = 0, len = chunks.length; i < len; i++) {
+          const chunk = chunks[i]
+          packageInfos = concat(
+            packageInfos,
+            await main.getPackageInfos(device.id, chunk)
+          )
+          iconsRef.current = map(packageInfos, (info) => {
+            const style: any = {
+              borderRadius: '20%',
+            }
+            if (!info.enabled) {
+              style.filter = 'grayscale(100%)'
+            }
 
-          return {
-            info: info,
-            src: info.icon || defaultIcon,
-            name: info.label,
-            style,
-          }
+            return {
+              info: info,
+              src: info.icon || defaultIcon,
+              name: info.label,
+              style,
+            }
+          })
+          setPackageInfos(packageInfos)
+        }
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), {
+          icon: 'error',
         })
-        setPackageInfos(packageInfos)
+      } finally {
+        setIsLoading(false)
       }
-      setIsLoading(false)
     } else {
       const idx = findIdx(
         packageInfos,
@@ -485,7 +493,16 @@ export default observer(function Application() {
           [Style.highlight]: dropHighlight,
         })}
       >
-        {isLoading && isEmpty(packageInfos) ? <PannelLoading /> : applications}
+        <div className={Style.appContainer}>
+          <ScenePanel />
+          <div className={Style.appContent}>
+            {isLoading && isEmpty(packageInfos) ? (
+              <PannelLoading />
+            ) : (
+              applications
+            )}
+          </div>
+        </div>
       </div>
       {!isNull(packageInfo) && (
         <PackageInfoModal

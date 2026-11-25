@@ -1,8 +1,9 @@
 import { Client } from '@devicefarmer/adbkit'
+import { app } from 'electron'
 import { handleEvent } from 'share/main/lib/util'
 import * as window from 'share/main/lib/window'
 import { getAdbPath, spawnAdb } from './base'
-import { DEFAULT_LOG_OUTPUT_DIR, matchPlatform } from 'common/logexport'
+import { matchPlatform } from 'common/logexport'
 import type { LogPlatform } from 'common/logexport'
 import fs from 'fs-extra'
 import path from 'node:path'
@@ -16,6 +17,7 @@ import {
   IpcDetectPlatform,
   IpcDiscoverLogPaths,
   IpcExportLog,
+  IpcGetLogExportDefaultDir,
   ILogExportResult,
   ILogPathValidity,
 } from 'common/types'
@@ -42,6 +44,19 @@ function formatTime(date: Date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
     date.getDate()
   )}-${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
+}
+
+/**
+ * Default local directory for exported logs. The Downloads folder is always an
+ * ASCII, writable path, unlike the legacy hardcoded desktop path which broke
+ * `adb pull` on systems whose desktop is a non-ASCII path.
+ */
+function getDefaultLogOutputDir() {
+  return path.join(app.getPath('downloads'), 'AYA_LOG')
+}
+
+const getLogExportDefaultDir: IpcGetLogExportDefaultDir = async function () {
+  return getDefaultLogOutputDir()
 }
 
 /**

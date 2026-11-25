@@ -13,6 +13,7 @@ if (isMac && process.arch !== 'arm64') {
 
 const config = {
   appId: pkg.appId,
+  electronDist: process.env.AYA_ELECTRON_DIST,
   directories: {
     output: process.env.AYA_RELEASE_DIR || `../release/${pkg.version}`,
   },
@@ -21,7 +22,7 @@ const config = {
   extraResources: {
     from: 'resources',
     to: './',
-    filter: ['**/*'],
+    filter: ['**/*', '!scenes/**/*.apk', '!scenes/**/*.mp3'],
   },
   nsis: {
     allowToChangeInstallationDirectory: true,

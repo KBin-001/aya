@@ -75,3 +75,64 @@
   width: 100%;
   height: 100%;
 }
+
+.mtkButton {
+  height: 24px;
+  max-width: 340px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-container);
+  color: var(--color-text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
+
+  &:hover:not(:disabled) {
+    border-color: #53b1fd;
+    color: #84caff;
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.mtkBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-container);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.mtkBarStatus {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mtkDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+
+  &.running {
+    background: #52c41a;
+    box-shadow: 0 0 4px #52c41a;
+  }
+
+  &.stopped {
+    background: var(--color-text-secondary);
+  }
+}

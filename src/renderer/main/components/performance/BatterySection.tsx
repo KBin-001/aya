@@ -73,7 +73,7 @@ export default function BatterySection(props: IBatterySectionProps) {
       ? props.metricsRef.current.battery.powerW
       : null
     if (powerW !== null) {
-      lastPowerRef.current = Number(powerW.toFixed(2))
+      lastPowerRef.current = Number(Math.abs(powerW).toFixed(2))
     }
     return lastPowerRef.current
   }, [])
@@ -133,7 +133,13 @@ export default function BatterySection(props: IBatterySectionProps) {
         <div className={Style.valueItem}>
           <span className={Style.valueLabel}>{t('power')}</span>
           <span className={Style.valueText}>
-            {formatValue(battery ? battery.powerW : null, 'W', 2)}
+            {formatValue(
+              battery && battery.powerW !== null
+                ? Math.abs(battery.powerW)
+                : null,
+              'W',
+              2,
+            )}
           </span>
         </div>
         <div className={Style.valueItem}>

@@ -11,7 +11,7 @@ import File from './components/file/File'
 import Layout from './components/layout/Layout'
 import UnlockRemount from './components/unlockRemount/UnlockRemount'
 import Style from './App.module.scss'
-import { useState, PropsWithChildren, FC } from 'react'
+import { useState, useRef, PropsWithChildren, FC } from 'react'
 import store from './store'
 import { observer } from 'mobx-react-lite'
 import { useCheckUpdate } from 'share/renderer/lib/hooks'
@@ -19,43 +19,50 @@ import { useCheckUpdate } from 'share/renderer/lib/hooks'
 export default observer(function App() {
   useCheckUpdate('https://aya.liriliri.io')
 
+  const deviceId = store.device ? store.device.id : ''
+  // Panels are remounted when the active device changes so they reload their
+  // per-device data. The shell panel is the exception: throwing it away when the
+  // device merely drops off the bus would erase the terminal scrollback, so it
+  // is keyed on the last device it was opened for instead.
+  const shellDeviceRef = useRef('')
+  if (deviceId && deviceId !== shellDeviceRef.current) {
+    shellDeviceRef.current = deviceId
+  }
+
   return (
     <>
       <Toolbar />
       {store.ready && (
         <div className={Style.workspace}>
-          <div
-            className={Style.panels}
-            key={store.device ? store.device.id : ''}
-          >
-            <Panel panel="overview">
+          <div className={Style.panels}>
+            <Panel panel="overview" key={`overview:${deviceId}`}>
               <Overview />
             </Panel>
-            <Panel panel="application">
+            <Panel panel="application" key={`application:${deviceId}`}>
               <Application />
             </Panel>
-            <Panel panel="screenshot">
+            <Panel panel="screenshot" key={`screenshot:${deviceId}`}>
               <Screenshot />
             </Panel>
-            <Panel panel="logcat">
+            <Panel panel="logcat" key={`logcat:${deviceId}`}>
               <Logcat />
             </Panel>
-            <Panel panel="shell">
+            <Panel panel="shell" key={`shell:${shellDeviceRef.current}`}>
               <Shell />
             </Panel>
-            <Panel panel="process">
+            <Panel panel="process" key={`process:${deviceId}`}>
               <Process />
             </Panel>
-            <Panel panel="performance">
+            <Panel panel="performance" key={`performance:${deviceId}`}>
               <Performance />
             </Panel>
-            <Panel panel="webview">
+            <Panel panel="webview" key={`webview:${deviceId}`}>
               <Webview />
             </Panel>
-            <Panel panel="file">
+            <Panel panel="file" key={`file:${deviceId}`}>
               <File />
             </Panel>
-            <Panel panel="layout">
+            <Panel panel="layout" key={`layout:${deviceId}`}>
               <Layout />
             </Panel>
           </div>

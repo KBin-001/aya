@@ -4,14 +4,24 @@ import LunaToolbar, {
   LunaToolbarInput,
   LunaToolbarSeparator,
 } from 'luna-toolbar/react'
-import LunaFileList from 'luna-file-list/react'
+import LunaFileList from './FileList'
 import ToolbarIcon from 'share/renderer/components/ToolbarIcon'
 import { useEffect, useRef, useState } from 'react'
 import Style from './File.module.scss'
 import store from '../../store'
 import { t } from 'common/util'
 import { notify, isFileDrop } from 'share/renderer/lib/util'
-import { IFile } from 'luna-file-list'
+import FileList, { IFile } from 'luna-file-list'
+import { IncrementalSearch, isSearchChar } from './lib/incrementalSearch'
+import {
+  deselect,
+  getInternals,
+  getItems,
+  getSelectedIndex,
+  pageStep,
+  selectIndex,
+} from './lib/fileNav'
+import { hasOpenModal, isControlTarget, isEditableTarget } from './lib/keyTarget'
 import className from 'licia/className'
 import isEmpty from 'licia/isEmpty'
 import splitPath from 'licia/splitPath'
@@ -25,6 +35,26 @@ import LunaSplitPane, { LunaSplitPaneItem } from 'luna-split-pane/react'
 import Transfer from './Transfer'
 import FilePreview from 'share/renderer/components/FilePreview'
 
+/**
+ * 会自己消费按键的导航键：焦点在按钮等控件上时要让给它们，
+ * 否则在工具栏按钮上按回车会被文件列表抢走。
+ */
+function isNavKey(key: string) {
+  switch (key) {
+    case 'ArrowDown':
+    case 'ArrowUp':
+    case 'Home':
+    case 'End':
+    case 'PageDown':
+    case 'PageUp':
+    case 'Enter':
+    case 'Backspace':
+    case 'Escape':
+      return true
+  }
+  return false
+}
+
 export default observer(function File() {
   const [fileList, setFileList] = useState<IFile[]>([])
   const [path, setPath] = useState('')
@@ -36,11 +66,26 @@ export default observer(function File() {
   const [selected, setSelected] = useState<IFile | undefined>()
   const [selectedUrl, setSelectedUrl] = useState<string>('')
   const draggingRef = useRef(0)
+  const fileListRef = useRef<FileList | null>(null)
+  const searchRef = useRef(new IncrementalSearch())
+  // 键盘选中是异步取预览地址的，连续移动时只认最后一次
+  const selectTokenRef = useRef(0)
+  // 监听只注册一次，用 ref 拿到最新一次渲染的处理器，避免闭包读到旧的 path/filter
+  const handlersRef = useRef<{ keydown: (e: KeyboardEvent) => void }>({
+    keydown: () => {},
+  })
 
   const { device, file } = store
 
   useEffect(() => {
     go('/')
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => handlersRef.current.keydown(e)
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   async function getFiles(path: string) {
@@ -66,6 +111,7 @@ export default observer(function File() {
       setCustomPath(path)
       setFileList(files)
       setFilter('')
+      searchRef.current.reset()
     }
   }
 
@@ -134,6 +180,156 @@ export default observer(function File() {
     notify(t('fileDownloading', { path: path + file.name }), { icon: 'info' })
     main.openFile(device.id, path + file.name)
   }
+
+  /** 列表当前能响应键盘吗：文件页可见、有设备、没有弹窗 */
+  function canHandleKeys() {
+    return store.panel === 'file' && !!device && !hasOpenModal()
+  }
+
+  /** 当前显示的项 + 内部结构，拿不到就返回 null */
+  function getVisible() {
+    const internals = getInternals(fileListRef.current)
+    if (!internals) {
+      return null
+    }
+    const listView = file.listView
+    const items = getItems(internals, listView)
+    if (isEmpty(items)) {
+      return null
+    }
+    return { internals, listView, items }
+  }
+
+  /**
+   * 输入定位（Windows 资源管理器式）：
+   * 敲 b 跳到第一个 b 开头的项，接着敲 c、a 收窄到 bca…，连按同一个键则在
+   * b… 之间轮换；停手超过 600ms 缓冲重置，下一次敲字重新开始。
+   */
+  function onTypeAhead(text: string) {
+    if (!canHandleKeys()) {
+      return
+    }
+    const visible = getVisible()
+    if (!visible) {
+      return
+    }
+
+    const { internals, listView, items } = visible
+    const search = searchRef.current
+    const now = Date.now()
+    let buffer = ''
+    for (let i = 0, len = text.length; i < len; i++) {
+      buffer = search.push(text[i], now)
+    }
+    if (!buffer) {
+      return
+    }
+
+    const index = search.find(
+      items.map((item) => item.name),
+      getSelectedIndex(internals, listView)
+    )
+    if (index !== -1) {
+      selectIndex(internals, listView, index)
+    }
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (!canHandleKeys()) {
+      return
+    }
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      return
+    }
+    // 输入法组合过程中不插手：这时拿不到最终字符，按键也不是用户想搜索的内容
+    if (e.isComposing || e.key === 'Process' || e.keyCode === 229) {
+      return
+    }
+    if (isEditableTarget(e.target)) {
+      return
+    }
+    if (isNavKey(e.key) && isControlTarget(e.target)) {
+      return
+    }
+
+    const visible = getVisible()
+    if (!visible) {
+      return
+    }
+    const { internals, listView, items } = visible
+    const search = searchRef.current
+    const current = getSelectedIndex(internals, listView)
+
+    function select(index: number) {
+      selectIndex(internals, listView, index)
+    }
+
+    function moveBy(delta: number) {
+      if (current === -1) {
+        // 没选中时：下键选第一项，上键选最后一项
+        select(delta > 0 ? 0 : items.length - 1)
+        return
+      }
+      const next = Math.min(Math.max(current + delta, 0), items.length - 1)
+      if (next !== current) {
+        select(next)
+      }
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        moveBy(1)
+        return
+      case 'ArrowUp':
+        e.preventDefault()
+        moveBy(-1)
+        return
+      case 'Home':
+        e.preventDefault()
+        select(0)
+        return
+      case 'End':
+        e.preventDefault()
+        select(items.length - 1)
+        return
+      case 'PageDown':
+        e.preventDefault()
+        moveBy(pageStep(internals, listView))
+        return
+      case 'PageUp':
+        e.preventDefault()
+        moveBy(-pageStep(internals, listView))
+        return
+      case 'Enter':
+        e.preventDefault()
+        if (current !== -1) {
+          open(items[current])
+        }
+        return
+      case 'Backspace':
+        e.preventDefault()
+        search.reset()
+        if (path !== '/') {
+          up()
+        }
+        return
+      case 'Escape':
+        e.preventDefault()
+        search.reset()
+        deselect(internals, listView)
+        return
+    }
+
+    if (!isSearchChar(e.key)) {
+      return
+    }
+    e.preventDefault()
+    onTypeAhead(e.key)
+  }
+
+  // 每次渲染都把最新处理器挂到 ref 上（监听只在挂载时注册一次）
+  handlersRef.current.keydown = onKeyDown
 
   function onContextMenu(e: MouseEvent, file?: IFile) {
     if (!device) {
@@ -354,6 +550,7 @@ export default observer(function File() {
           state={file.listView ? '' : 'hover'}
           onClick={() => {
             if (file.listView) {
+              searchRef.current.reset()
               file.set('listView', false)
             }
           }}
@@ -364,6 +561,7 @@ export default observer(function File() {
           state={file.listView ? 'hover' : ''}
           onClick={() => {
             if (!file.listView) {
+              searchRef.current.reset()
               file.set('listView', true)
             }
           }}
@@ -421,17 +619,26 @@ export default observer(function File() {
                   filter={filter}
                   columns={['name', 'mode', 'mtime', 'type', 'size']}
                   listView={file.listView}
+                  onCreate={(fl) => {
+                    fileListRef.current = fl
+                  }}
                   onDoubleClick={(e: MouseEvent, file: IFile) => open(file)}
                   onContextMenu={onContextMenu}
                   onSelect={async (file: IFile) => {
+                    const token = ++selectTokenRef.current
                     const url = await main.getFileUrl(
                       device!.id,
                       path + file.name
                     )
+                    // 键盘连续移动时会有多次请求在飞，只认最后一次
+                    if (token !== selectTokenRef.current) {
+                      return
+                    }
                     setSelectedUrl(url)
                     setSelected(file)
                   }}
                   onDeselect={() => {
+                    selectTokenRef.current++
                     setSelectedUrl('')
                     setSelected(undefined)
                   }}

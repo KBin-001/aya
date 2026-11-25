@@ -1,9 +1,5 @@
 import type { ILegacyMtkLogConfig, ILogExportConfig } from './types'
-import {
-  DEFAULT_LOG_OUTPUT_DIR,
-  DEFAULT_MTK_PATHS,
-  DEFAULT_UNISOC_PATHS,
-} from './defaults'
+import { DEFAULT_MTK_PATHS, DEFAULT_UNISOC_PATHS } from './defaults'
 
 function normalize(value: string | null | undefined): string | null {
   if (typeof value !== 'string') {
@@ -19,11 +15,14 @@ function normalize(value: string | null | undefined): string | null {
  *
  * The two legacy "path" slots were both MediaTek sources, so they merge into
  * the MTK candidate list and the active slot becomes the selected path; UNISOC
- * starts from its defaults. The function is deterministic and reads its input
- * only, so applying it twice yields the same result.
+ * starts from its defaults. `defaultOutputDir` is the caller-provided local
+ * directory to use when the legacy output directory is empty. The function is
+ * deterministic and reads its input only, so applying it twice yields the same
+ * result.
  */
 export function migrateLogExportConfig(
   legacy: ILegacyMtkLogConfig,
+  defaultOutputDir: string,
 ): ILogExportConfig {
   const source = normalize(legacy.source)
   const source2 = normalize(legacy.source2)
@@ -47,6 +46,6 @@ export function migrateLogExportConfig(
       mtk: { paths, selected },
       unisoc: { paths: [...DEFAULT_UNISOC_PATHS], selected: null },
     },
-    outputDir: normalize(legacy.outputDir) || DEFAULT_LOG_OUTPUT_DIR,
+    outputDir: normalize(legacy.outputDir) || defaultOutputDir,
   }
 }

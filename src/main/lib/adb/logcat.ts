@@ -1,5 +1,6 @@
 import Emitter from 'licia/Emitter'
 import types from 'licia/types'
+import isEmpty from 'licia/isEmpty'
 import { Client } from '@devicefarmer/adbkit'
 import { getAdbPath, getDeviceStore, getPidNames, setDeviceStore } from './base'
 import uniqId from 'licia/uniqId'
@@ -114,7 +115,53 @@ class KernelLog extends Emitter {
   }
 }
 
-const logcats: types.PlainObj<Logcat | KernelLog> = {}
+/**
+ * Kernel logs (and busy logcat tags) can emit thousands of lines per second.
+ * Sending one IPC message per line saturates both the main process event loop
+ * and the renderer, so entries are coalesced into small batches instead.
+ */
+const BATCH_INTERVAL = 50
+const BATCH_SIZE = 200
+
+class EntryBatcher {
+  private buffer: any[] = []
+  private timer: NodeJS.Timeout | null = null
+  constructor(private send: (entries: any[]) => void) {}
+  push(entry: any) {
+    this.buffer.push(entry)
+    if (this.buffer.length >= BATCH_SIZE) {
+      this.flush()
+    } else if (!this.timer) {
+      this.timer = setTimeout(() => this.flush(), BATCH_INTERVAL)
+    }
+  }
+  flush() {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    if (isEmpty(this.buffer)) {
+      return
+    }
+    const entries = this.buffer
+    this.buffer = []
+    this.send(entries)
+  }
+  dispose() {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    this.buffer = []
+  }
+}
+
+interface ILogcatSession {
+  logcat: Logcat | KernelLog
+  batcher: EntryBatcher
+}
+
+const logcats: types.PlainObj<ILogcatSession> = {}
 
 const openLogcat: IpcOpenLogcat = async function (deviceId, source = 'logcat') {
   let logcat: Logcat | KernelLog
@@ -130,10 +177,11 @@ const openLogcat: IpcOpenLogcat = async function (deviceId, source = 'logcat') {
     await logcat.init(deviceId)
   }
   const logcatId = uniqId('logcat')
-  logcat.on('entry', (entry) => {
-    window.sendTo('main', 'logcatEntry', logcatId, entry)
+  const batcher = new EntryBatcher((entries) => {
+    window.sendTo('main', 'logcatEntries', logcatId, entries)
   })
-  logcats[logcatId] = logcat
+  logcat.on('entry', (entry) => batcher.push(entry))
+  logcats[logcatId] = { logcat, batcher }
 
   return logcatId
 }
@@ -169,15 +217,29 @@ function toLogcatPriority(priority: number) {
 }
 
 const pauseLogcat: IpcPauseLogcat = async function (logcatId) {
-  logcats[logcatId].pause()
+  const session = logcats[logcatId]
+  if (!session) {
+    return
+  }
+  session.logcat.pause()
+  // Flush whatever is already buffered so nothing is lost while paused.
+  session.batcher.flush()
 }
 
 const resumeLogcat: IpcResumeLogcat = async function (logcatId) {
-  logcats[logcatId].resume()
+  const session = logcats[logcatId]
+  if (session) {
+    session.logcat.resume()
+  }
 }
 
 const closeLogcat: IpcCloseLogcat = async function (logcatId) {
-  logcats[logcatId].close()
+  const session = logcats[logcatId]
+  if (!session) {
+    return
+  }
+  session.logcat.close()
+  session.batcher.dispose()
   delete logcats[logcatId]
 }
 

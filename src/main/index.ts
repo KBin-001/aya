@@ -2,6 +2,7 @@ import { app } from 'electron'
 import * as menu from './lib/menu'
 import * as main from './window/main'
 import * as adb from './lib/adb'
+import * as scene from './lib/scene'
 import * as terminal from 'share/main/window/terminal'
 import * as window from 'share/main/lib/window'
 import log from 'share/common/log'
@@ -21,6 +22,7 @@ app.on('ready', () => {
 
   terminal.init()
   adb.init()
+  scene.init()
   main.showWin()
   menu.init()
 })

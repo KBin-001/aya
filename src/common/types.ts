@@ -136,6 +136,8 @@ export type IpcDiscoverLogPaths = (
   platform: LogPlatform
 ) => Promise<string[]>
 
+export type IpcGetLogExportDefaultDir = () => Promise<string>
+
 export interface ILogExportProgress {
   message: string
 }

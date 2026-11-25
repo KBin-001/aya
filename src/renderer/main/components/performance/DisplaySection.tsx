@@ -20,8 +20,10 @@ function brightnessText(display: IDisplayReading | null) {
   if (!display || display.brightnessRaw === null) {
     return '--'
   }
-  if (display.brightnessPct !== null) {
-    return `${display.brightnessPct}%`
+  if (display.brightnessPct !== null && display.brightnessMax !== null) {
+    // The percentage alone hides which scale the panel uses (0-255 vs 0-4095);
+    // the raw level over its maximum makes that unambiguous.
+    return `${display.brightnessPct}% (${display.brightnessRaw}/${display.brightnessMax})`
   }
 
   // No published range: the level is still real information, so show it as the
@@ -38,6 +40,7 @@ export default function DisplaySection(props: IDisplaySectionProps) {
   const refreshChangesRef = useRef<IChangeRecord<number>[]>([])
   const screenChangesRef = useRef<IChangeRecord<string>[]>([])
   const lastBrightnessRef = useRef(0)
+  const lastBrightnessRawRef = useRef(0)
   const lastRefreshRef = useRef(0)
 
   const metrics = props.metricsRef.current
@@ -76,6 +79,16 @@ export default function DisplaySection(props: IDisplaySectionProps) {
       lastBrightnessRef.current = pct
     }
     return lastBrightnessRef.current
+  }, [])
+
+  const brightnessRawData = useCallback(() => {
+    const raw = props.metricsRef.current
+      ? props.metricsRef.current.display.brightnessRaw
+      : null
+    if (raw !== null) {
+      lastBrightnessRawRef.current = raw
+    }
+    return lastBrightnessRawRef.current
   }, [])
 
   const refreshData = useCallback(() => {
@@ -145,6 +158,19 @@ export default function DisplaySection(props: IDisplaySectionProps) {
           smooth={false}
           height={60}
           unit="%"
+          color={isDark ? blue6Dark : blue6}
+        />
+      ) : null}
+      {display && display.brightnessRaw !== null ? (
+        <LunaPerformanceMonitor
+          title={`${t('brightness')}${
+            display.brightnessMax !== null ? ` (0-${display.brightnessMax})` : ''
+          }`}
+          data={brightnessRawData}
+          theme={store.theme}
+          smooth={false}
+          height={60}
+          unit=""
           color={isDark ? blue6Dark : blue6}
         />
       ) : null}
