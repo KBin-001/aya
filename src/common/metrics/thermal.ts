@@ -12,7 +12,7 @@ import { fail, ok, ParseResult } from './result'
 import { ICoolingDevice, IThermalZone } from './types'
 
 const regTemperature =
-  /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=(\w+)/
+  /Temperature\{mValue=([\d.]+),\s*mType=(\d+),\s*mName=([\w-]+)/
 
 const regCoolingDevice =
   /CoolingDevice\{mValue=(-?[\d.]+),\s*mType=(\d+),\s*mName=([^,}]+)/
@@ -25,7 +25,7 @@ const regThermalStatus = /Thermal Status:\s*(-?\d+)/
  * unsigned pattern so its numbers stay exactly as they were.
  */
 const regZoneTemperature =
-  /Temperature\{mValue=(-?[\d.]+),\s*mType=(\d+),\s*mName=(\w+)/
+  /Temperature\{mValue=(-?[\d.]+),\s*mType=(\d+),\s*mName=([\w-]+)/
 
 /**
  * Average temperature of the CPU zones reported by `dumpsys thermalservice`.
@@ -41,7 +41,10 @@ export function parseCpuTemperature(
 
   each(thermalServiceText.split('\n'), (line) => {
     const match = line.match(regTemperature)
-    if (match && startWith(match[3], 'CPU')) {
+    // mType 0 is the CPU temperature type (ThermalHAL TemperatureType.CPU),
+    // whatever the vendor names the zone: `CPU` on MediaTek, `soc-thmzone` on
+    // Spreadtrum. The `CPU` name prefix is kept for dumps that omit the type.
+    if (match && (match[2] === '0' || startWith(match[3], 'CPU'))) {
       cpuTemperatures[match[3]] = toNum(match[1])
     }
   })

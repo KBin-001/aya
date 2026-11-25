@@ -129,18 +129,27 @@ describe('parseCpuTemperature', () => {
   })
 
   it('averages every zone whose name starts with CPU', () => {
-    const record = (name: string, value: string) =>
-      `\tTemperature{mValue=${value}, mType=0, mName=${name}, mStatus=0}`
+    const record = (name: string, value: string, type: string) =>
+      `\tTemperature{mValue=${value}, mType=${type}, mName=${name}, mStatus=0}`
 
     expect(
       parseCpuTemperature(
         [
-          record('CPU_BIG', '40'),
-          record('CPU_LITTLE', '60'),
-          record('GPU', '99'),
+          record('CPU_BIG', '40', '0'),
+          record('CPU_LITTLE', '60', '0'),
+          record('GPU', '99', '1'),
         ].join('\n'),
       ),
     ).toEqual({ ok: true, value: 50 })
+  })
+
+  it('reads the CPU zone by type when its name is not CPU-prefixed', () => {
+    // Spreadtrum reports its CPU-type zone as `soc-thmzone`, mType 0.
+    expect(
+      parseCpuTemperature(
+        '\tTemperature{mValue=33.21, mType=0, mName=soc-thmzone, mStatus=0}',
+      ),
+    ).toEqual({ ok: true, value: 33.2 })
   })
 
   it('rounds to three significant digits, not three decimals', () => {
@@ -167,5 +176,51 @@ describe('parseCpuTemperature', () => {
 
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toContain('CPU')
+  })
+})
+
+describe('Spreadtrum (UMS9370) thermal output', () => {
+  const dumpsys = readFixture(
+    'ums9370-sysfs-reference',
+    'dumpsys-thermalservice.txt',
+  )
+  const types = readFixture(
+    'ums9370-sysfs-reference',
+    'thermal-zones-types.txt',
+  )
+  const temps = readFixture(
+    'ums9370-sysfs-reference',
+    'thermal-zones-temps.txt',
+  )
+
+  it('reads the CPU temperature from the mType-0 soc-thmzone', () => {
+    expect(parseCpuTemperature(dumpsys)).toEqual({ ok: true, value: 33.2 })
+  })
+
+  it('pairs the sysfs zones with their hyphenated names', () => {
+    const result = parseThermalZones(types, temps)
+    if (!result.ok) throw new Error('fixture should parse')
+
+    expect(result.value).toHaveLength(26)
+    expect(result.value.find((zone) => zone.name === 'gpu-thmzone')).toEqual({
+      name: 'gpu-thmzone',
+      temperatureC: 32.73,
+    })
+    expect(result.value.find((zone) => zone.name === 'skin-thmzone')).toEqual({
+      name: 'skin-thmzone',
+      temperatureC: 28.015,
+    })
+  })
+
+  it('reads the HAL zones with their full hyphenated names', () => {
+    const result = parseThermalService(dumpsys)
+    if (!result.ok) throw new Error('fixture should parse')
+
+    expect(result.value.thermalStatus).toBe(0)
+    expect(result.value.zones).toHaveLength(4)
+    expect(result.value.zones).toContainEqual({
+      name: 'soc-thmzone',
+      temperatureC: 33.21,
+    })
   })
 })
