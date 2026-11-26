@@ -572,6 +572,7 @@ describe('collectMetrics', () => {
   it('marks the battery unsupported only when no source answered at all', async () => {
     const outputs = healthyOutputs()
     outputs['probe:power'] = ''
+    outputs['battery:node'] = ''
     outputs['battery:dumpsys'] = ''
     const shell = fakeShell(outputs)
 

@@ -160,7 +160,7 @@
 
 .historyPanel {
   position: absolute;
-  z-index: 1;
+  z-index: 20;
   inset: 0 var(--shell-rail-width) auto auto;
   display: flex;
   flex-direction: column;
@@ -238,11 +238,12 @@
 }
 
 .historyList {
+  flex: 1 1 auto;
   min-height: 0;
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 .historyItem {
@@ -275,6 +276,7 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
+  user-select: text;
 
   code {
     display: block;
@@ -283,6 +285,7 @@
     white-space: pre;
     font-family: theme.$font-family-code;
     font-size: 13px;
+    user-select: text;
   }
 
   &:focus-visible {

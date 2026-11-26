@@ -245,12 +245,13 @@ function buildReads(probe: IDeviceProbe): IRead[] {
   }
   reads.push({ key: 'thermal:service', command: 'dumpsys thermalservice' })
 
-  if (probe.powerSupplyBattery) {
+  // Read the battery node when it answered at probe time, and the service dump
+  // otherwise. The node is detected by reading its fields rather than by
+  // listing the directory: some boards refuse `ls` to the shell user but still
+  // allow `cat`.
+  if (probe.powerSupplyReadable) {
     reads.push({ key: 'battery:node', command: POWER_SUPPLY_SCAN })
-  }
-  // The battery service dump is the fallback; when the node answered at probe
-  // time it is pure cost, so it is only read for devices that need it.
-  if (!probe.powerSupplyReadable) {
+  } else {
     reads.push({ key: 'battery:dumpsys', command: 'dumpsys battery' })
   }
 
@@ -579,7 +580,7 @@ function readBattery(
   outputs: Record<string, string>,
   probe: IDeviceProbe,
 ): IBatteryReading {
-  if (probe.powerSupplyBattery) {
+  if (probe.powerSupplyReadable) {
     const node = parsePowerSupplyBattery(outputs['battery:node'] || '')
     if (node.ok) {
       return node.value
@@ -591,7 +592,7 @@ function readBattery(
     return fallback.value
   }
 
-  return probe.powerSupplyBattery
+  return probe.powerSupplyReadable
     ? emptyBattery(
         'error',
         'power_supply',
