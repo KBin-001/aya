@@ -286,6 +286,11 @@ export default observer(function Shell() {
         onCreateInputSetter={(setter) => {
           shell.setInput = setter
         }}
+        onOpenCommandPalette={() => {
+          setHistoryOpen(false)
+          setHistoryQuery('')
+          setCommandPaletteVisible(true)
+        }}
         onCommand={addHistory}
         onStatus={(status) => setStatuses((previous) => ({
           ...previous,
@@ -1116,10 +1121,13 @@ export default observer(function Shell() {
                         type="button"
                         className={Style.historyCommand}
                         title={command}
-                        disabled={!selectedShell?.sessionId}
                         onClick={() => {
+                          if (!selectedShell?.sessionId || !selectedShell.setInput) {
+                            notify(t('deviceNotConnected'), { icon: 'error' })
+                            return
+                          }
                           closeHistory()
-                          selectedShell?.setInput?.(command)
+                          selectedShell.setInput(command)
                         }}
                       >
                         <code>{command}</code>

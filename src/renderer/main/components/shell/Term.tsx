@@ -33,6 +33,7 @@ interface ITermProps {
   onSessionIdChange: (id: string) => void
   onCreate: (terminal: Terminal) => void
   onCreateInputSetter: (setter: (value: string) => void) => void
+  onOpenCommandPalette: () => void
   onCommand: (command: string) => void
   onStatus: (status?: ShellStatus) => void
 }
@@ -273,6 +274,12 @@ export default observer(function Term(props: ITermProps) {
 
   function handleTermData(data: string) {
     if (!handleHistoryKeys(data)) {
+      // A slash on an empty input line opens the command palette instead of
+      // reaching the shell, so a command can be picked without typing it out.
+      if (inputRef.current === '' && data === '/') {
+        props.onOpenCommandPalette()
+        return
+      }
       writeInput(data)
     }
   }
